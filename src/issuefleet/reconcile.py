@@ -953,6 +953,7 @@ class Reconciler:
                 return
             log.warning("worker %s: session dead, restarting (%d so far)", rec.issue_key, rec.restarts)
             self._sync_branch(rec, project, mailbox)
+            self._stage_overlay(rec.repo, rec.worktree)
             self.runner.start(rec, self.cfg)
             rec.restarts += 1
             rec.touch()
@@ -1587,6 +1588,20 @@ class Reconciler:
             return
         mailbox.ensure().put_inbox("info", {"text": text}, coalesce=True)
 
+    def _stage_overlay(self, repo, worktree) -> None:
+        """Stage the default python3 overlay when the repo ships none,
+        git-excluded so `git add .` never commits it. Runs on the claim path
+        and on restart (for worktrees that predate the feature); best-effort
+        like _sync_branch — a failure must not break the caller's
+        restart-or-park accounting."""
+        try:
+            if worker_mod.ensure_container_overlay(Path(worktree)):
+                self.git.add_worktree_exclude(
+                    Path(repo), Path(worktree), worker_mod.OVERLAY_NAME
+                )
+        except OSError as e:
+            log.warning("could not stage container overlay in %s: %s", worktree, e)
+
     def _sync_branch(self, rec: WorkerRecord, project: ProjectConfig, mailbox: Mailbox) -> None:
         """Fast-forward a restarting worker's branch onto origin before its
         agent comes back up.
@@ -2028,6 +2043,7 @@ class Reconciler:
             worktree, issue, branch, project.base_ref, self.cfg,
             siblings=self._siblings(project),
         )
+        self._stage_overlay(project.repo, worktree)
 
         rec = WorkerRecord(
             issue_id=issue.id,
