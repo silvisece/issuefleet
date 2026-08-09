@@ -532,7 +532,7 @@ class Reconciler:
         from issuefleet.agent_runtime.turns import PHASE_RUNNING
 
         worker_mod.provision(
-            worktree, issue, rec.branch, rec.base_ref, self.cfg,
+            worktree, issue, rec.branch, rec.base_ref, self.cfg, project,
             session_uuid=rec.session_uuid,
             turns_taken=max(1, rec.released_turns),
             phase=PHASE_RUNNING,
@@ -2040,7 +2040,7 @@ class Reconciler:
         for rel in worker_mod.inherit_repo_files(project.repo, worktree, self.cfg.copy_from_repo):
             self.git.add_worktree_exclude(project.repo, worktree, rel)
         session_uuid = worker_mod.provision(
-            worktree, issue, branch, project.base_ref, self.cfg,
+            worktree, issue, branch, project.base_ref, self.cfg, project,
             siblings=self._siblings(project),
         )
         self._stage_overlay(project.repo, worktree)
