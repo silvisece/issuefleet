@@ -533,7 +533,7 @@ class Reconciler:
         from issuefleet.agent_runtime.turns import PHASE_RUNNING
 
         worker_mod.provision(
-            worktree, issue, rec.branch, rec.base_ref, self.cfg,
+            worktree, issue, rec.branch, rec.base_ref, self.cfg, project,
             session_uuid=rec.session_uuid,
             turns_taken=max(1, rec.released_turns),
             phase=PHASE_RUNNING,
@@ -2126,7 +2126,7 @@ class Reconciler:
             log.warning("[%s] description image ingest failed (%s)", issue.key, e)
             description_images = []
         session_uuid = worker_mod.provision(
-            worktree, issue, branch, project.base_ref, self.cfg,
+            worktree, issue, branch, project.base_ref, self.cfg, project,
             siblings=self._siblings(project),
             attachments=description_images,
         )

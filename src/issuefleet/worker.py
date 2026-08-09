@@ -15,6 +15,7 @@ from pathlib import Path
 
 import issuefleet
 from issuefleet.agent_runtime.turns import TurnState
+from issuefleet.config import worker_claude_args
 from issuefleet.mailbox import Mailbox
 from issuefleet.prompts import render_brief
 
@@ -117,6 +118,7 @@ def provision(
     branch: str,
     base_ref: str,
     config,
+    project=None,
     session_uuid: str | None = None,
     turns_taken: int = 0,
     phase: str | None = None,
@@ -133,6 +135,10 @@ def provision(
     released worker's own UUID and turn count so its Claude conversation resumes
     (turns_taken > 0 makes the loop use ``--resume`` rather than re-create the
     session). Defaults reproduce the original fresh-claim behaviour.
+
+    ``project`` (when given) resolves the worker's model/effort per project or
+    branch via ``config.worker_claude_args``, baked into TurnState at first
+    provision.
 
     Returns the worker's Claude session UUID.
     """
@@ -157,7 +163,7 @@ def provision(
         session_uuid=session_uuid or str(uuid.uuid4()),
         turns_taken=turns_taken,
         max_auto_turns=config.max_auto_turns,
-        claude_args=list(config.claude_args),
+        claude_args=worker_claude_args(config, project, branch),
     )
     if phase is not None:
         state.phase = phase
