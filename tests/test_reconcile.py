@@ -392,6 +392,74 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(fb[0].payload["reviewer"], "bob")
         self.assertEqual(fb[0].payload["path"], "src/x.py")
 
+    # -- image attachments (CLA-46) ---------------------------------------
+
+    def _fake_images(self):
+        """Patch the attachment fetch so image ingest runs fully offline: any
+        URL 'downloads' to a tiny PNG. Returns the list of URLs fetched."""
+        from issuefleet import attachments
+
+        fetched = []
+
+        def fetch(url, headers):
+            fetched.append(url)
+            return "image/png", b"\x89PNG-fake"
+
+        self._orig_fetch = attachments._default_fetch
+        attachments._default_fetch = fetch
+        self.addCleanup(setattr, attachments, "_default_fetch", self._orig_fetch)
+        return fetched
+
+    def test_description_image_downloaded_into_brief(self):
+        self._fake_images()
+        w = self.claim_one(
+            description="See mock ![m](https://uploads.linear.app/a/b/shot.png)"
+        )
+        attach = Path(w.worktree) / ".agent" / "attachments"
+        files = list(attach.glob("*.png"))
+        self.assertEqual(len(files), 1)
+        brief = (Path(w.worktree) / ".agent" / "brief.md").read_text()
+        self.assertIn(".agent/attachments/", brief)
+        self.assertIn("Read tool", brief)
+
+    def test_comment_image_downloaded_and_forwarded(self):
+        self._fake_images()
+        self.claim_one()
+        self.tracker.human_comment(
+            "issue-1", "here ![p](https://uploads.linear.app/x/y/pic.png)"
+        )
+        self.rec.tick()
+        replies = [m for m in self.mailbox().pending_inbox() if m.kind == "reply"]
+        self.assertEqual(len(replies), 1)
+        images = replies[0].payload.get("images")
+        self.assertTrue(images and images[0].startswith(".agent/attachments/"))
+        self.assertTrue((Path(self.worker().worktree) / images[0]).is_file())
+
+    def test_pr_feedback_image_forwarded(self):
+        self._fake_images()
+        self.claim_one()
+        self.mailbox().put_outbox("ready", {"title": "T", "body": "B"})
+        self.rec.tick()
+        n = self.worker().pr_number
+        self.forge.add_feedback(
+            n, "look ![s](https://user-images.githubusercontent.com/1/2.png)",
+            kind="review_comment", reviewer="bob", path="src/x.py",
+        )
+        self.rec.tick()
+        fb = [m for m in self.mailbox().pending_inbox() if m.kind == "pr_feedback"]
+        self.assertEqual(len(fb), 1)
+        images = fb[0].payload.get("images")
+        self.assertTrue(images and images[0].endswith(".png"))
+
+    def test_comment_without_image_has_no_images_key(self):
+        self._fake_images()
+        self.claim_one()
+        self.tracker.human_comment("issue-1", "plain text, no pictures here")
+        self.rec.tick()
+        replies = [m for m in self.mailbox().pending_inbox() if m.kind == "reply"]
+        self.assertEqual(len(replies), 1)
+        self.assertNotIn("images", replies[0].payload)
+
     def test_merge_tears_down_completely(self):
         self.claim_one()
         self.mailbox().put_outbox("ready", {"title": "T", "body": "B"})

@@ -658,6 +658,21 @@ the head SHA and the verdict, so a completed run notifies exactly once, a fresh
 push earns a new notification, and a re-run that flips failure→success tells the
 agent its fix landed.
 
+**Images** posted on the issue, in comments, or in PR/MR review feedback are
+picked up automatically. The interesting ones live behind authenticated URLs —
+`uploads.linear.app` returns 401 to anyone without the workspace token, and
+GitHub/GitLab attachments need the forge token — so the credential-less worker
+container could never fetch them itself. Instead the daemon does the download
+host-side (with the same Linear/forge credentials it already holds), drops each
+image as a local file under the worktree's `.agent/attachments/`, and points the
+worker's prompt at the local paths; the agent opens them with its Read tool and
+sees the picture. Markdown/HTML image embeds are always fetched; bare links only
+when they point at a known attachment host. Best-effort throughout: a download
+that 401s, is oversized, or isn't actually an image is skipped, leaving the
+original link in the text. Downloads carry credentials only to the originating
+host — a redirect to signed storage on another host drops the auth header — and
+land under `.agent/` so the worker's `git add` never sweeps them into the PR.
+
 Teardown (merge, un-claim, or `stop`): signal the agent via a `shutdown`
 mailbox message → archive the mailbox + turn transcripts to
 `<state_dir>/archive/<project>-<KEY>-<timestamp>/` (the transcript outlives

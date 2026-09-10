@@ -18,6 +18,7 @@ import threading
 import time
 from pathlib import Path
 
+from issuefleet import attachments as attachments_mod
 from issuefleet import marker, MARKER_PREFIX
 from issuefleet import config as config_mod
 from issuefleet import gitops
@@ -974,7 +975,7 @@ class Reconciler:
 
         self._bind_agent_session(rec)
         self._drain_outbox(rec, project, mailbox)
-        self._ingest_comments(rec, mailbox)
+        self._ingest_comments(rec, mailbox, project)
         self._check_pr(rec, project, mailbox)
         self._check_upstream(rec, mailbox)
 
@@ -1508,7 +1509,72 @@ class Reconciler:
             )
         mailbox.archive_outbox(msg, receipt={"pr": pr.number, "url": pr.url})
 
-    def _ingest_comments(self, rec: WorkerRecord, mailbox: Mailbox) -> None:
+    def _image_auth(self, project: ProjectConfig):
+        """A ``url -> {headers}`` resolver that attaches the right credential
+        for each attachment host, so the orchestrator can fetch images the
+        network-less worker can't. Linear uploads ride the workspace token;
+        GitHub/GitLab attachments ride the project's forge token. Everything is
+        best-effort and getattr-guarded so a fake tracker/forge (or a public
+        image needing no auth) simply gets no header."""
+        forge = self.forges.get(project.name)
+        client = getattr(self.tracker, "client", None)
+
+        def auth_for_url(url: str) -> dict:
+            from urllib.parse import urlsplit
+
+            try:
+                parts = urlsplit(url)
+            except ValueError:
+                return {}
+            host = (parts.hostname or "").lower()
+            path = parts.path or ""
+            if host == "uploads.linear.app":
+                hdr = getattr(client, "auth_header", None)
+                if callable(hdr):
+                    try:
+                        return {"Authorization": hdr()}
+                    except Exception:
+                        return {}
+                return {}
+            token = self._forge_token(forge)
+            if not token:
+                return {}
+            if host.endswith("githubusercontent.com") or host == "github.com":
+                return {"Authorization": f"Bearer {token}"}
+            if "/uploads/" in path:  # GitLab
+                return {"PRIVATE-TOKEN": token}
+            return {}
+
+        return auth_for_url
+
+    @staticmethod
+    def _forge_token(forge) -> str | None:
+        """The bearer token behind a forge, or None (fakes / unset). Reaches for
+        the same accessor GithubForge/GitlabForge use internally, tolerating its
+        absence so tests with a bare fake forge don't blow up."""
+        fn = getattr(forge, "_current_token", None)
+        if not callable(fn):
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    def _ingest_images(self, text: str, rec: WorkerRecord, project: ProjectConfig) -> list[str]:
+        """Download any images referenced in ``text`` into the worker's worktree
+        and return their worktree-relative paths. Best-effort: a download layer
+        failure must never break comment/PR ingestion, so it degrades to 'no
+        images' (the original link stays in the text the worker still sees)."""
+        try:
+            return attachments_mod.download_images(
+                text, rec.worktree, auth_for_url=self._image_auth(project)
+            )
+        except Exception as e:
+            log.warning("worker %s: image ingest failed (%s); leaving links inline",
+                        rec.issue_key, e)
+            return []
+
+    def _ingest_comments(self, rec: WorkerRecord, mailbox: Mailbox, project: ProjectConfig) -> None:
         comments = self.tracker.comments_since(rec.issue_id, rec.comment_cursor)
         # The marker filters every post we author directly. Identity is only
         # a valid filter when we authenticate AS AN APP: then viewer-authored
@@ -1527,9 +1593,11 @@ class Reconciler:
                 advanced = True
             if MARKER_PREFIX in c.body or (app_viewer is not None and c.author_id == app_viewer):
                 continue
-            mailbox.ensure().put_inbox(
-                "reply", {"author": c.author_name, "text": c.body, "source": "linear"}
-            )
+            payload = {"author": c.author_name, "text": c.body, "source": "linear"}
+            images = self._ingest_images(c.body, rec, project)
+            if images:
+                payload["images"] = images
+            mailbox.ensure().put_inbox("reply", payload)
             last_user_comment = c.id
         if last_user_comment is not None:
             # 👀 once per ingest batch that carried real user input (not once
@@ -1647,16 +1715,17 @@ class Reconciler:
                 continue
             new_feedback.append(fb)
         for fb in new_feedback:
-            mailbox.ensure().put_inbox(
-                "pr_feedback",
-                {
-                    "reviewer": fb.reviewer,
-                    "kind": fb.kind,
-                    "path": fb.path,
-                    "text": fb.body,
-                    "url": fb.url,
-                },
-            )
+            payload = {
+                "reviewer": fb.reviewer,
+                "kind": fb.kind,
+                "path": fb.path,
+                "text": fb.body,
+                "url": fb.url,
+            }
+            images = self._ingest_images(fb.body, rec, project)
+            if images:
+                payload["images"] = images
+            mailbox.ensure().put_inbox("pr_feedback", payload)
             rec.seen_feedback_ids.append(fb.id)
         if new_feedback:
             rec.seen_feedback_ids = rec.seen_feedback_ids[-_SEEN_IDS_CAP:]
@@ -2039,9 +2108,22 @@ class Reconciler:
         self.git.add_worktree_exclude(project.repo, worktree, "siblings/")
         for rel in worker_mod.inherit_repo_files(project.repo, worktree, self.cfg.copy_from_repo):
             self.git.add_worktree_exclude(project.repo, worktree, rel)
+        # Download any images embedded in the issue description before the brief
+        # is rendered, so the first turn already points at local files the
+        # network-less worker can open (uploads.linear.app & friends 401 for it).
+        # Best-effort: image fetching must never abort (and thus endlessly retry)
+        # a claim.
+        try:
+            description_images = attachments_mod.download_images(
+                issue.description, worktree, auth_for_url=self._image_auth(project)
+            )
+        except Exception as e:
+            log.warning("[%s] description image ingest failed (%s)", issue.key, e)
+            description_images = []
         session_uuid = worker_mod.provision(
             worktree, issue, branch, project.base_ref, self.cfg, project,
             siblings=self._siblings(project),
+            attachments=description_images,
         )
         self._stage_overlay(project.repo, worktree)
 
