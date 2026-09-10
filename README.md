@@ -58,6 +58,16 @@ worker shows as done, not stuck "Working…" until Linear times it out to
 "Error". In personal-key/comment mode the 👀 falls back to a deduped comment;
 the ⚙️/✅ are session-only to avoid thread spam.
 
+The same 👀 lands on the **forge** side too: when a human comments on the PR/MR
+— a top-level comment, a review with a body, or an inline comment on the diff
+(GitHub); a discussion or diff note (GitLab) — the orchestrator forwards it to
+the worker (the `pr_feedback` inbox message wakes it, exactly like a Linear
+`reply`) and 👀-reacts on that comment (GitHub reactions / GitLab award-emoji)
+so the commenter sees it was picked up. A reaction, never a reply, so it adds
+no thread noise and can't feed back into the feedback poll. A GitHub review
+*summary* body has no reactions endpoint, so that one surface is forwarded but
+not reacted-to; everything else gets the 👀.
+
 **Authoring issues.** Delegate (or @-mention) the bot on an issue such as
 "turn the WORKLOG backlog into tickets"; the worker reads the source, then
 calls `agentctl file-issue --title … --description-file …` once per ticket.

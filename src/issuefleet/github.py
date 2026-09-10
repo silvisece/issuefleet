@@ -150,6 +150,27 @@ class GithubForge:
             )
         return out
 
+    def ack_feedback(self, number: int, feedback_id: str) -> bool:
+        """👀 a comment via the reactions API so its author sees it was picked
+        up. Reactions attach to issue comments (``ic-``) and inline review
+        comments (``rc-``); a review *summary* body (``rv-``) has no reactions
+        endpoint, so those are skipped. Best-effort — a reaction is a courtesy,
+        never worth failing ingestion over. ``number`` is unused here (GitHub
+        addresses comments by their own id) but kept for the uniform port."""
+        prefix, _, raw = feedback_id.partition("-")
+        if prefix == "ic":
+            path = f"/repos/{self.slug}/issues/comments/{raw}/reactions"
+        elif prefix == "rc":
+            path = f"/repos/{self.slug}/pulls/comments/{raw}/reactions"
+        else:
+            return False  # review-summary body: no reactions endpoint
+        try:
+            self._call("POST", path, {"content": "eyes"})
+            return True
+        except ApiError as e:
+            log.debug("github: 👀 reaction on %s failed: %s", feedback_id, e)
+            return False
+
     def ci_status(self, ref: str) -> CiStatus:
         """Fold the check-runs API and the combined commit-status API for
         ``ref`` into one verdict.

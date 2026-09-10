@@ -1658,6 +1658,14 @@ class Reconciler:
                 },
             )
             rec.seen_feedback_ids.append(fb.id)
+            # 👀 in the forge UI the instant the comment is routed — the
+            # analog of _ack_seen's Linear thought, so a PR/MR commenter
+            # gets an immediate signal it landed. Best-effort: a reaction is
+            # a courtesy and must never break ingestion.
+            try:
+                forge.ack_feedback(rec.pr_number, fb.id)
+            except Exception:
+                log.exception("forge feedback ack failed (%s #%d)", fb.id, rec.pr_number)
         if new_feedback:
             rec.seen_feedback_ids = rec.seen_feedback_ids[-_SEEN_IDS_CAP:]
             rec.touch()

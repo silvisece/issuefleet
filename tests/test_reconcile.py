@@ -391,6 +391,38 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(len(fb), 1)
         self.assertEqual(fb[0].payload["reviewer"], "bob")
         self.assertEqual(fb[0].payload["path"], "src/x.py")
+        # 👀 acknowledged in the forge UI exactly once — the analog of the
+        # Linear 👀 thought — and never re-acked on a later tick.
+        self.assertEqual(self.forge.acked, [(n, "f1-" + str(n))])
+
+    def test_feedback_acked_once_per_item_across_surfaces(self):
+        self.claim_one()
+        self.mailbox().put_outbox("ready", {"title": "T", "body": "B"})
+        self.rec.tick()
+        n = self.worker().pr_number
+        self.forge.add_feedback(n, "top-level", kind="comment", reviewer="alice")
+        self.forge.add_feedback(n, "[APPROVED] lgtm", kind="review", reviewer="carol")
+        self.forge.add_feedback(n, "rename", kind="review_comment", reviewer="bob", path="x.py")
+        self.rec.tick()
+        # Every distinct comment surface is acked exactly once, in order.
+        self.assertEqual([fid for _, fid in self.forge.acked],
+                         [f"f1-{n}", f"f2-{n}", f"f3-{n}"])
+        # A second tick with no new feedback acks nothing further.
+        self.rec.tick()
+        self.assertEqual(len(self.forge.acked), 3)
+
+    def test_feedback_ack_failure_never_blocks_ingestion(self):
+        self.claim_one()
+        self.mailbox().put_outbox("ready", {"title": "T", "body": "B"})
+        self.rec.tick()
+        n = self.worker().pr_number
+        self.forge.ack_raises = True  # an unexpected error escapes the forge
+        self.forge.add_feedback(n, "please fix", reviewer="bob")
+        self.rec.tick()  # must not raise
+        # The comment still reached the worker and is still deduped afterwards.
+        fb = [m for m in self.mailbox().pending_inbox() if m.kind == "pr_feedback"]
+        self.assertEqual(len(fb), 1)
+        self.assertIn(f"f1-{n}", self.worker().seen_feedback_ids)
 
     def test_merge_tears_down_completely(self):
         self.claim_one()

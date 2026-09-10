@@ -58,6 +58,30 @@ end-to-end flow — `docs/SMOKE_TEST.md` is the step-by-step procedure.
 
 ## Recent additions
 
+- **CLA-45 — 👀-ack PR/MR feedback like Linear comments** (branch
+  `agent/cla-45-…`): the worker already picks up GitHub/GitLab PR/MR comments
+  across every surface (issue comment + review body + inline review comment on
+  GitHub; discussion + diff notes on GitLab) via `forge.pr_feedback` →
+  `pr_feedback` inbox message → the worker wakes, exactly like a Linear
+  `reply`. What was missing vs Linear was the *acknowledgment*: a commenter on
+  the PR/MR got no signal it landed. New `Forge.ack_feedback(number,
+  feedback_id)` reacts 👀 on the comment — GitHub reactions API on issue
+  (`ic-`) and inline (`rc-`) comments; GitLab `notes/<id>/award_emoji` on plain
+  (`nt-`) and diff (`dn-`) notes — wired into `reconcile._check_pr` so it fires
+  the instant each new item is routed (the forge analog of `_ack_seen`).
+  Reaction, not reply: no thread noise, and it can't feed back into the
+  feedback poll. Best-effort throughout — a reaction failure only logs, never
+  blocks ingestion. A GitHub review *summary* body has no reactions endpoint,
+  so that surface is forwarded but not reacted-to.
+  Offline-tested (github/gitlab transport reaction endpoints, reconcile
+  ack-once-per-item / dedup-across-restart / ack-failure-tolerance).
+  **Unproven live** (no network in the worktree): to verify on the operator's
+  Mac, open a throwaway PR on a fleet repo, comment on it in each UI spot
+  (top-level, a review with a body, an inline diff comment; on GitLab an MR
+  comment + a diff-note), and confirm within a poll cycle (a) the worker takes
+  a turn on each and (b) a 👀 appears on each comment except a GitHub
+  review-summary body. Repeat on a GitLab MR.
+
 - **FUG-41 — fleet manager** (branch `agent/fug-41-…`): a host-side singleton
   (`fleet_manager.py`) that bridges a Signal group (via a sigbot service) to the
   fleet, ticked alongside the reconciler in `issuefleet run` when
