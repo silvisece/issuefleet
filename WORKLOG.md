@@ -75,12 +75,12 @@ end-to-end flow — `docs/SMOKE_TEST.md` is the step-by-step procedure.
   so that surface is forwarded but not reacted-to.
   Offline-tested (github/gitlab transport reaction endpoints, reconcile
   ack-once-per-item / dedup-across-restart / ack-failure-tolerance).
-  **Unproven live** (no network in the worktree): to verify on the operator's
-  Mac, open a throwaway PR on a fleet repo, comment on it in each UI spot
-  (top-level, a review with a body, an inline diff comment; on GitLab an MR
-  comment + a diff-note), and confirm within a poll cycle (a) the worker takes
-  a turn on each and (b) a 👀 appears on each comment except a GitHub
-  review-summary body. Repeat on a GitLab MR.
+  **Verified live** host-side on both forges: all four reactable surfaces
+  (`ic-`, `rc-`, `nt-`, `dn-`) took the 👀 and `rv-` correctly declined;
+  `_check_pr` drove it end to end on GitHub through a real daemon tick (comment
+  → 👀 → the worker's turn, inside one poll cycle) and on GitLab against a live
+  MR with a real forge; and a second pass re-notified and re-acked nothing, so
+  `seen_feedback_ids` dedupe holds on both.
 
 - **FUG-41 — fleet manager** (branch `agent/fug-41-…`): a host-side singleton
   (`fleet_manager.py`) that bridges a Signal group (via a sigbot service) to the
