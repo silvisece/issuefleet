@@ -13,20 +13,20 @@ class ExtractTest(unittest.TestCase):
     def test_markdown_image_embeds(self):
         text = "before ![alt text](https://uploads.linear.app/a/b/img.png) after"
         self.assertEqual(
-            a.extract_image_urls(text), ["https://uploads.linear.app/a/b/img.png"]
+            a.extract_image_refs(text), ["https://uploads.linear.app/a/b/img.png"]
         )
 
     def test_markdown_with_title_and_angle_brackets(self):
         text = '![a](<https://x.test/one.png> "a title") ![b](https://x.test/two.jpg "t")'
         self.assertEqual(
-            a.extract_image_urls(text),
+            a.extract_image_refs(text),
             ["https://x.test/one.png", "https://x.test/two.jpg"],
         )
 
     def test_html_img_tag(self):
         text = '<img src="https://user-images.githubusercontent.com/1/2.png" width=40>'
         self.assertEqual(
-            a.extract_image_urls(text),
+            a.extract_image_refs(text),
             ["https://user-images.githubusercontent.com/1/2.png"],
         )
 
@@ -37,7 +37,7 @@ class ExtractTest(unittest.TestCase):
             "https://gl.example/g/p/uploads/hh/pic.gif end"
         )
         self.assertEqual(
-            a.extract_image_urls(text),
+            a.extract_image_refs(text),
             [
                 "https://uploads.linear.app/x/y/z.png",
                 "https://github.com/user-attachments/assets/abcd",
@@ -47,19 +47,19 @@ class ExtractTest(unittest.TestCase):
 
     def test_bare_image_extension_kept_but_prose_link_dropped(self):
         text = "shot https://cdn.test/pic.jpg but not https://example.com/page here"
-        self.assertEqual(a.extract_image_urls(text), ["https://cdn.test/pic.jpg"])
+        self.assertEqual(a.extract_image_refs(text), ["https://cdn.test/pic.jpg"])
 
     def test_dedupe_preserves_first_order(self):
         text = (
             "![a](https://uploads.linear.app/i.png) then again "
             "![a2](https://uploads.linear.app/i.png)"
         )
-        self.assertEqual(a.extract_image_urls(text), ["https://uploads.linear.app/i.png"])
+        self.assertEqual(a.extract_image_refs(text), ["https://uploads.linear.app/i.png"])
 
     def test_non_http_and_empty(self):
-        self.assertEqual(a.extract_image_urls(""), [])
-        self.assertEqual(a.extract_image_urls(None), [])
-        self.assertEqual(a.extract_image_urls("![x](data:image/png;base64,AAAA)"), [])
+        self.assertEqual(a.extract_image_refs(""), [])
+        self.assertEqual(a.extract_image_refs(None), [])
+        self.assertEqual(a.extract_image_refs("![x](data:image/png;base64,AAAA)"), [])
 
     def test_is_attachment_url(self):
         self.assertTrue(a.is_attachment_url("https://uploads.linear.app/a"))
@@ -68,6 +68,52 @@ class ExtractTest(unittest.TestCase):
         )
         self.assertTrue(a.is_attachment_url("https://gl.test/g/p/uploads/h/x.png"))
         self.assertFalse(a.is_attachment_url("https://example.com/normal/page"))
+
+    def test_relative_upload_paths_kept(self):
+        # GitLab embeds note/issue bodies as relative /uploads/ paths.
+        text = "here ![p](/uploads/abc123/pic.png) and prose /not/an/image"
+        self.assertEqual(a.extract_image_refs(text), ["/uploads/abc123/pic.png"])
+
+    def test_deeper_relative_paths_dropped(self):
+        # Only site-relative (/-rooted) refs survive; a bare relative isn't
+        # fetchable and would just be noise.
+        self.assertEqual(a.extract_image_refs("![p](images/pic.png)"), [])
+
+
+class GitlabResolverTest(unittest.TestCase):
+    def setUp(self):
+        self.resolve = a.gitlab_resolver(
+            "gitlab.example.com", "https://gitlab.example.com/api/v4", "grp%2Fproj"
+        )
+
+    def test_relative_upload_rewritten_to_api(self):
+        self.assertEqual(
+            self.resolve("/uploads/abc123/pic.png"),
+            "https://gitlab.example.com/api/v4/projects/grp%2Fproj/uploads/abc123/pic.png",
+        )
+
+    def test_absolute_web_upload_rewritten_to_api(self):
+        self.assertEqual(
+            self.resolve("https://gitlab.example.com/grp/proj/uploads/def456/img.jpg"),
+            "https://gitlab.example.com/api/v4/projects/grp%2Fproj/uploads/def456/img.jpg",
+        )
+
+    def test_dash_project_upload_form_rewritten(self):
+        self.assertEqual(
+            self.resolve("https://gitlab.example.com/-/project/42/uploads/aa/bb.png"),
+            "https://gitlab.example.com/api/v4/projects/grp%2Fproj/uploads/aa/bb.png",
+        )
+
+    def test_external_absolute_url_passes_through(self):
+        url = "https://uploads.linear.app/a/b/c.png"
+        self.assertEqual(self.resolve(url), url)
+
+    def test_other_host_upload_not_rewritten(self):
+        url = "https://elsewhere.test/g/p/uploads/x/y.png"
+        self.assertEqual(self.resolve(url), url)
+
+    def test_non_upload_relative_dropped(self):
+        self.assertIsNone(self.resolve("/foo/bar.png"))
 
 
 class DownloadTest(unittest.TestCase):
@@ -129,6 +175,50 @@ class DownloadTest(unittest.TestCase):
         # A URL with no image extension and a non-image content-type is dropped.
         saved = a.download_images("![m](https://x.test/thing)", self.wt, fetch=fetch)
         self.assertEqual(saved, [])
+
+    def test_html_at_image_url_is_rejected(self):
+        # The GitLab web route returns a text/html sign-in page even at a .png
+        # URL; it must NOT be saved as an image (fail-safe must hold).
+        def fetch(url, headers):
+            return "text/html", b"<html>sign in</html>"
+
+        saved = a.download_images("![m](https://gl.test/g/p/uploads/s/probe.png)",
+                                  self.wt, fetch=fetch)
+        self.assertEqual(saved, [])
+        self.assertFalse(self.attach_dir().exists())
+
+    def test_octet_stream_with_image_suffix_saved(self):
+        # The authenticated GitLab uploads API serves images as octet-stream.
+        def fetch(url, headers):
+            return "application/octet-stream", b"\x89PNG realbytes"
+
+        saved = a.download_images(
+            "![m](https://gl.test/api/v4/projects/1/uploads/s/pic.png)",
+            self.wt, fetch=fetch,
+        )
+        self.assertEqual(len(saved), 1)
+        self.assertTrue(saved[0].endswith(".png"))
+
+    def test_gitlab_resolve_and_auth_end_to_end(self):
+        # Relative /uploads path -> API URL, fetched with PRIVATE-TOKEN.
+        seen = {}
+
+        def fetch(url, headers):
+            seen["url"], seen["headers"] = url, headers
+            return "application/octet-stream", b"\x89PNGdata"
+
+        resolve = a.gitlab_resolver("gl.test", "https://gl.test/api/v4", "g%2Fp")
+
+        def auth(url):
+            return {"PRIVATE-TOKEN": "tok"} if "/uploads/" in url else {}
+
+        saved = a.download_images(
+            "look ![p](/uploads/abc/pic.png)", self.wt,
+            auth_for_url=auth, fetch=fetch, resolve=resolve,
+        )
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(seen["url"], "https://gl.test/api/v4/projects/g%2Fp/uploads/abc/pic.png")
+        self.assertEqual(seen["headers"], {"PRIVATE-TOKEN": "tok"})
 
     def test_fetch_error_is_swallowed(self):
         def fetch(url, headers):

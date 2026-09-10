@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -57,9 +58,10 @@ _LINEAR_HOST = "uploads.linear.app"
 _GH_IMG_HOST_SUFFIX = "user-images.githubusercontent.com"  # covers private-* too
 
 
-def _md_image_urls(text: str) -> list[str]:
-    """URLs from markdown image embeds ``![alt](url "title")`` and HTML
+def _md_image_refs(text: str) -> list[str]:
+    """Destinations from markdown image embeds ``![alt](url "title")`` and HTML
     ``<img src=...>`` — deliberate image references, fetched regardless of host.
+    May be absolute URLs or site-relative paths (the caller decides what to do).
     Hand-parsed rather than regex'd so nested parens in a URL don't truncate it.
     """
     out: list[str] = []
@@ -157,27 +159,34 @@ def _has_image_ext(url: str) -> bool:
         return False
 
 
-def extract_image_urls(text: str) -> list[str]:
-    """Every image URL worth downloading from a block of markdown/HTML text,
-    order-preserving and deduped. Markdown/HTML image embeds are always taken;
-    bare links only when they point at a known attachment host or carry an
-    image extension (so ordinary prose links aren't fetched)."""
+def extract_image_refs(text: str) -> list[str]:
+    """Every image reference worth downloading from a block of markdown/HTML
+    text, order-preserving and deduped. Markdown/HTML image embeds are always
+    taken; bare links only when they point at a known attachment host or carry
+    an image extension (so ordinary prose links aren't fetched).
+
+    Absolute ``http(s)`` URLs and **site-relative** paths (``/uploads/…``) are
+    both kept — GitLab's API returns note/issue bodies with relative upload
+    paths, which a host-aware resolver turns into a fetchable URL. Everything
+    else (``data:``, ``mailto:``, bare anchors, deeper-relative paths) is
+    dropped."""
     if not text:
         return []
-    urls = list(_md_image_urls(text))
+    refs = list(_md_image_refs(text))
     for tok in _bare_urls(text):
         if is_attachment_url(tok):
-            urls.append(tok)
+            refs.append(tok)
     seen: set[str] = set()
     out: list[str] = []
-    for u in urls:
-        u = u.strip()
-        if not u.lower().startswith(("http://", "https://")):
+    for r in refs:
+        r = r.strip()
+        if not r or r in seen:
             continue
-        if u in seen:
+        low = r.lower()
+        if not (low.startswith(("http://", "https://")) or r.startswith("/")):
             continue
-        seen.add(u)
-        out.append(u)
+        seen.add(r)
+        out.append(r)
     return out
 
 
@@ -195,7 +204,7 @@ def _bare_urls(text: str) -> list[str]:
             continue
         tok = raw[pos:].rstrip(").,'\"];!")
         # A markdown ![alt](url) leaves the url followed by ')'; already handled
-        # by _md_image_urls, but strip a leading '(' just in case.
+        # by _md_image_refs, but strip a leading '(' just in case.
         tok = tok.lstrip("(")
         if tok:
             out.append(tok)
@@ -236,22 +245,79 @@ def _default_fetch(url: str, headers: dict[str, str]) -> tuple[str, bytes]:
     return ct, data
 
 
+# Content types that carry no format signal of their own — an authenticated
+# GitLab uploads-API image comes back as octet-stream — so the URL's image
+# suffix is trusted for these (and only these).
+_GENERIC_TYPES = frozenset(
+    {"", "application/octet-stream", "binary/octet-stream", "application/binary"}
+)
+
+
 def _ext_for(url: str, content_type: str) -> str | None:
-    """The file extension to save under, or None if this doesn't look like an
-    image at all (content-type not image/* and no image extension on the URL)."""
-    ext = _CT_EXT.get(content_type)
-    if ext:
-        return ext
-    suffix = ""
+    """The file extension to save under, or None if this isn't an image.
+
+    A concrete non-image type is rejected *regardless of the URL suffix* — an
+    unauthenticated GitLab web-route upload returns a ``text/html`` sign-in page
+    at a ``.png`` URL, and saving that as an image would break the fail-safe.
+    The suffix is trusted only for image/* and for the generic octet-stream
+    types the authenticated uploads API serves."""
+    ct = (content_type or "").lower()
+    if ct.startswith("image/"):
+        return _CT_EXT.get(ct) or _url_img_suffix(url) or ".img"
+    if ct in _GENERIC_TYPES:
+        return _url_img_suffix(url)
+    return None  # text/*, application/json, and every other concrete non-image
+
+
+def _url_img_suffix(url: str) -> str | None:
     try:
         suffix = Path(urlsplit(url).path).suffix.lower()
     except ValueError:
-        suffix = ""
+        return None
     if suffix in _IMG_EXTS:
         return ".jpg" if suffix == ".jpeg" else suffix
-    if content_type.startswith("image/"):
-        return ".img"  # image, but an unfamiliar subtype — keep it, best-effort
     return None
+
+
+def _default_resolve(ref: str) -> str | None:
+    """The fetch URL for a raw reference: an absolute ``http(s)`` URL as-is, and
+    nothing else (a site-relative path needs a host-aware resolver to become
+    fetchable). Callers with forge context pass their own."""
+    return ref if ref.lower().startswith(("http://", "https://")) else None
+
+
+# The ``/uploads/<secret>/<filename>`` tail GitLab appends to project/wiki
+# upload paths, in both the ``/<group>/<proj>/uploads/…`` and
+# ``/-/project/<id>/uploads/…`` shapes. ``<secret>`` is a hex digest;
+# ``<filename>`` runs to the end of the path.
+_GL_UPLOADS_RE = re.compile(r"/uploads/(?P<secret>[^/]+)/(?P<file>[^/?#]+)")
+
+
+def gitlab_resolver(host: str, api_root: str, project_id: str):
+    """A ``resolve(ref) -> url | None`` that turns GitLab upload references into
+    the **token-authenticated uploads API** URL
+    (``<api_root>/projects/<id>/uploads/<secret>/<file>``). The web route
+    (``https://<host>/<slug>/uploads/…``) ignores ``PRIVATE-TOKEN`` and serves a
+    sign-in page, so both the relative form GitLab embeds in bodies and the
+    absolute web URL are rewritten to the API. Non-GitLab / non-upload absolute
+    URLs pass through unchanged; anything else is dropped."""
+
+    def resolve(ref: str) -> str | None:
+        low = ref.lower()
+        if low.startswith(("http://", "https://")):
+            parts = urlsplit(ref)
+            if (parts.hostname or "").lower() == (host or "").lower():
+                m = _GL_UPLOADS_RE.search(parts.path)
+                if m:
+                    return f"{api_root}/projects/{project_id}/uploads/{m['secret']}/{m['file']}"
+            return ref  # some other absolute URL (Linear, github, external) — as-is
+        if ref.startswith("/"):  # site-relative upload path from a GitLab body
+            m = _GL_UPLOADS_RE.search(ref)
+            if m:
+                return f"{api_root}/projects/{project_id}/uploads/{m['secret']}/{m['file']}"
+        return None
+
+    return resolve
 
 
 def download_images(
@@ -259,23 +325,34 @@ def download_images(
     worktree: str | Path,
     auth_for_url=None,
     fetch=None,
+    resolve=None,
 ) -> list[str]:
     """Download every image referenced in ``text`` into
     ``<worktree>/.agent/attachments/`` and return the saved files as
     worktree-relative POSIX paths (e.g. ``.agent/attachments/ab12cd.png``),
     order-preserving and deduped.
 
-    ``auth_for_url(url) -> dict`` supplies per-host request headers (the Linear
-    or forge credential); missing / returning ``{}`` means an unauthenticated
-    fetch. Best-effort: any per-image failure is logged and skipped.
+    ``resolve(ref) -> url | None`` turns a raw reference (an absolute URL or a
+    site-relative ``/uploads/…`` path) into the URL to actually fetch, or None
+    to skip it — this is where GitLab's relative-path and web→API rewriting
+    happens. ``auth_for_url(url) -> dict`` supplies per-host request headers (the
+    Linear or forge credential); missing / returning ``{}`` means an
+    unauthenticated fetch. Best-effort: any per-image failure is logged and
+    skipped.
     """
-    urls = extract_image_urls(text)
-    if not urls:
+    refs = extract_image_refs(text)
+    if not refs:
         return []
+    resolve = resolve or _default_resolve
     fetch = fetch or _default_fetch
     dest_dir = Path(worktree) / _ATTACH_DIR
     saved: list[str] = []
-    for url in urls:
+    seen_urls: set[str] = set()
+    for ref in refs:
+        url = resolve(ref)
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
         rel = _download_one(url, dest_dir, Path(worktree), auth_for_url, fetch)
         if rel and rel not in saved:
             saved.append(rel)

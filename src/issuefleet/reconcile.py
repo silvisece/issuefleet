@@ -1560,6 +1560,21 @@ class Reconciler:
         except Exception:
             return None
 
+    def _image_resolve(self, project: ProjectConfig):
+        """A ``ref -> url`` resolver for attachment references. For a GitLab
+        project it rewrites upload references (relative ``/uploads/…`` from note
+        bodies, or the absolute web URL, both of which the web route won't serve
+        with a token) to the authenticated uploads API. For everything else it's
+        the identity on absolute URLs. Falls back to the default resolver when
+        the forge doesn't expose GitLab's shape (GitHub, or a fake)."""
+        forge = self.forges.get(project.name)
+        host = getattr(forge, "host", None)
+        api_root = getattr(forge, "api_root", None)
+        project_id = getattr(forge, "project_id", None)
+        if host and api_root and project_id:
+            return attachments_mod.gitlab_resolver(host, api_root, project_id)
+        return None
+
     def _ingest_images(self, text: str, rec: WorkerRecord, project: ProjectConfig) -> list[str]:
         """Download any images referenced in ``text`` into the worker's worktree
         and return their worktree-relative paths. Best-effort: a download layer
@@ -1567,7 +1582,9 @@ class Reconciler:
         images' (the original link stays in the text the worker still sees)."""
         try:
             return attachments_mod.download_images(
-                text, rec.worktree, auth_for_url=self._image_auth(project)
+                text, rec.worktree,
+                auth_for_url=self._image_auth(project),
+                resolve=self._image_resolve(project),
             )
         except Exception as e:
             log.warning("worker %s: image ingest failed (%s); leaving links inline",
@@ -2115,7 +2132,9 @@ class Reconciler:
         # a claim.
         try:
             description_images = attachments_mod.download_images(
-                issue.description, worktree, auth_for_url=self._image_auth(project)
+                issue.description, worktree,
+                auth_for_url=self._image_auth(project),
+                resolve=self._image_resolve(project),
             )
         except Exception as e:
             log.warning("[%s] description image ingest failed (%s)", issue.key, e)

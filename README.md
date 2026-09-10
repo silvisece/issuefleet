@@ -667,11 +667,16 @@ host-side (with the same Linear/forge credentials it already holds), drops each
 image as a local file under the worktree's `.agent/attachments/`, and points the
 worker's prompt at the local paths; the agent opens them with its Read tool and
 sees the picture. Markdown/HTML image embeds are always fetched; bare links only
-when they point at a known attachment host. Best-effort throughout: a download
-that 401s, is oversized, or isn't actually an image is skipped, leaving the
-original link in the text. Downloads carry credentials only to the originating
-host — a redirect to signed storage on another host drops the auth header — and
-land under `.agent/` so the worker's `git add` never sweeps them into the PR.
+when they point at a known attachment host. GitLab is special-cased: its upload
+references (the relative `/uploads/<secret>/<file>` paths its API returns, and
+the web upload URL) are rewritten to the token-authenticated uploads API, since
+the web route ignores the token and serves a sign-in page. Best-effort
+throughout: a download that 401s, is oversized, or comes back a non-image
+content type (a `text/*` sign-in page, even at a `.png` URL) is skipped, leaving
+the original link in the text. Downloads carry credentials only to the
+originating host — a redirect to signed storage on another host drops the auth
+header — and land under `.agent/` so the worker's `git add` never sweeps them
+into the PR.
 
 Teardown (merge, un-claim, or `stop`): signal the agent via a `shutdown`
 mailbox message → archive the mailbox + turn transcripts to

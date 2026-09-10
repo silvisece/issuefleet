@@ -451,6 +451,37 @@ class ReconcileTest(unittest.TestCase):
         images = fb[0].payload.get("images")
         self.assertTrue(images and images[0].endswith(".png"))
 
+    def test_gitlab_relative_upload_rewritten_and_authed(self):
+        # A GitLab-shaped forge: relative /uploads paths from note bodies must be
+        # rewritten to the token-authenticated uploads API (verified live in
+        # CLA-46), not fetched off the web route.
+        from issuefleet import attachments
+
+        self.forge.host = "gl.test"
+        self.forge.api_root = "https://gl.test/api/v4"
+        self.forge.project_id = "g%2Fp"
+        self.forge._current_token = lambda: "gltok"
+
+        seen = {}
+
+        def fetch(url, headers):
+            seen["url"], seen["headers"] = url, headers
+            return "application/octet-stream", b"\x89PNGdata"
+
+        orig = attachments._default_fetch
+        attachments._default_fetch = fetch
+        self.addCleanup(setattr, attachments, "_default_fetch", orig)
+
+        self.claim_one()
+        self.tracker.human_comment("issue-1", "see ![p](/uploads/abc123/pic.png)")
+        self.rec.tick()
+        self.assertEqual(
+            seen["url"], "https://gl.test/api/v4/projects/g%2Fp/uploads/abc123/pic.png"
+        )
+        self.assertEqual(seen["headers"].get("PRIVATE-TOKEN"), "gltok")
+        replies = [m for m in self.mailbox().pending_inbox() if m.kind == "reply"]
+        self.assertTrue(replies[0].payload.get("images"))
+
     def test_comment_without_image_has_no_images_key(self):
         self._fake_images()
         self.claim_one()
