@@ -32,6 +32,72 @@ The three supporting arguments:
 
 ---
 
+## Visual overview
+
+*(GitHub renders the diagrams below natively; in a plain-text viewer they
+appear as fenced `mermaid` code.)*
+
+### Positioning — breadth vs. safety/operational rigor
+
+The two products occupy different corners: Multica maximizes surface area,
+issuefleet maximizes trust and lifecycle rigor. The upper-right (both) is open
+space neither fully owns yet.
+
+```mermaid
+quadrantChart
+    title Product positioning
+    x-axis "Narrow scope" --> "Broad surface area"
+    y-axis "Convenience-first" --> "Safety & operational rigor"
+    quadrant-1 "Broad + rigorous (open space)"
+    quadrant-2 "Rigorous, narrow"
+    quadrant-3 "Minimal"
+    quadrant-4 "Broad, early"
+    issuefleet: [0.22, 0.86]
+    Multica: [0.82, 0.42]
+```
+
+### Same purpose, opposite architectures
+
+```mermaid
+flowchart LR
+    subgraph IF["issuefleet — bridge onto your stack"]
+        direction TB
+        L["Linear (your board)"] --> D["Host daemon<br/>(holds all credentials)"]
+        D -->|relay via mailbox| W["Agent container<br/>(no credentials)<br/>Claude Code"]
+        W -->|asks host to act| D
+        D --> G["GitHub / GitLab PR"]
+    end
+    subgraph MC["Multica — replace your PM tool"]
+        direction TB
+        U["Web / Desktop / Mobile UI"] --> B["Multica board<br/>(Go + Postgres17 + pgvector)"]
+        B --> R["Runtimes on your machines<br/>(26 agent CLIs)"]
+        R --> F["GitHub / GitLab / Gitea / Forgejo"]
+        B <--> S["Skills library<br/>(vector search)"]
+    end
+```
+
+### Capability coverage at a glance
+
+Bar length ≈ how much of each dimension the product ships today (illustrative,
+derived from the capability table below).
+
+```mermaid
+---
+config:
+    xyChart:
+        width: 760
+        height: 420
+---
+xychart-beta
+    title "Capability coverage (illustrative, 0-10)"
+    x-axis ["Board/UI", "Agent-CLI breadth", "Forge breadth", "Skills library", "Credential isolation", "Lifecycle/crash-safety", "Cost budgets"]
+    y-axis "Coverage" 0 --> 10
+    bar "issuefleet" [2, 2, 7, 0, 10, 9, 2]
+    bar "Multica" [9, 10, 9, 8, 5, 4, 4]
+```
+
+---
+
 ## Executive summary
 
 | | **issuefleet** (this repo) | **Multica** (multica.ai) |
