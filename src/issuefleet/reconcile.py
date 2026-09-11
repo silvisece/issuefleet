@@ -539,6 +539,7 @@ class Reconciler:
             phase=PHASE_RUNNING,
             siblings=self._siblings(project),
         )
+        self._stage_overlay(project.repo, worktree)
 
         rec.phase = PHASE_ACTIVE
         rec.released_at = None
@@ -1662,8 +1663,9 @@ class Reconciler:
 
     def _stage_overlay(self, repo, worktree) -> None:
         """Stage the default python3 overlay when the repo ships none,
-        git-excluded so `git add .` never commits it. Runs on the claim path
-        and on restart (for worktrees that predate the feature); best-effort
+        git-excluded so `git add .` never commits it. Runs on the claim path,
+        on restart (for worktrees that predate the feature), and on adopting a
+        released worker (whose worktree is rebuilt from scratch); best-effort
         like _sync_branch — a failure must not break the caller's
         restart-or-park accounting."""
         try:
