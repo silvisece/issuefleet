@@ -362,6 +362,22 @@ class GithubForgeTest(unittest.TestCase):
         with self.assertRaisesRegex(ApiError, "expected a list, got dict"):
             GithubForge("tok", "o/r", transport=t).pr_feedback(5)
 
+    def test_a_forge_that_never_runs_out_of_pages_raises(self):
+        full = [{"id": i, "user": {"login": "a"}, "body": "b", "html_url": ""} for i in range(100)]
+
+        class Endless:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, method, url, headers, payload):
+                self.calls += 1
+                return list(full)
+
+        t = Endless()
+        with self.assertRaisesRegex(ApiError, "more than 100 pages"):
+            GithubForge("tok", "o/r", transport=t).pr_feedback(5)
+        self.assertEqual(t.calls, 100)
+
     def test_ci_status_folds_checks_and_statuses_to_success(self):
         t = RecordingTransport(
             [

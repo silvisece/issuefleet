@@ -9,19 +9,21 @@ from issuefleet.config import ProjectConfig, ClaimRule
 from issuefleet.forge import build_forge, forge_kind, infer_kind
 from issuefleet.github import GithubForge
 from issuefleet.gitlab import GitlabForge
-from issuefleet.httpx import ApiError
+from issuefleet.httpx import ApiError, JsonResponse
 from issuefleet.giturl import parse_remote
 from issuefleet.model import PrFeedback
 
 
 class RecordingTransport:
+    """Stands in for `urllib_transport_with_headers`: a body and no headers."""
+
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
 
     def __call__(self, method, url, headers, payload):
         self.calls.append({"method": method, "url": url, "headers": headers, "payload": payload})
-        return self.responses.pop(0)
+        return JsonResponse(self.responses.pop(0), {})
 
 
 class HttpResponse:
@@ -319,6 +321,21 @@ class GitlabForgeTest(unittest.TestCase):
                     with self.assertRaisesRegex(ApiError, "invalid GitLab next-page header"):
                         GitlabForge("tok", "g/p").pr_feedback(5)
                 self.assertEqual(opened.call_count, 1)
+
+    def test_a_forge_that_never_runs_out_of_pages_raises(self):
+        notes = [{"id": i, "body": "b", "author": {"username": "a"}, "system": False,
+                  "type": None} for i in range(100)]
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=[HttpResponse(notes, {"X-Next-Page": str(p)})
+                                     for p in range(2, 102)]) as opened:
+            with self.assertRaisesRegex(ApiError, "more than 100 pages"):
+                GitlabForge("tok", "g/p").pr_feedback(5)
+        self.assertEqual(opened.call_count, 100)
+
+    def test_reply_returns_none_when_the_forge_gives_no_id(self):
+        t = RecordingTransport([[{"id": "d1", "notes": [{"id": 42}]}], {}])
+        fb = PrFeedback(id="nt-42", kind="comment", reviewer="b", body="x")
+        self.assertIsNone(GitlabForge("tok", "g/p", transport=t).reply_to_feedback(5, fb, "x"))
 
     def test_close_mr_uses_state_event(self):
         t = RecordingTransport([{}])

@@ -109,9 +109,8 @@ class GitlabForge:
         return self._response(method, path, payload).data
 
     def _response(self, method: str, path: str, payload: dict | None = None) -> JsonResponse:
-        """The call's body and response headers. A transport that returns the
-        decoded JSON alone is read as a response carrying no headers."""
-        response = self.transport(
+        """The call's body and response headers."""
+        return self.transport(
             method,
             f"{self.api_root}{path}",
             {
@@ -124,13 +123,9 @@ class GitlabForge:
             },
             payload,
         )
-        return response if isinstance(response, JsonResponse) else JsonResponse(response, {})
 
     def _mr(self, path: str = "") -> str:
         return f"/projects/{self.project_id}/merge_requests{path}"
-
-    def _discussions_url(self, number: int) -> str:
-        return f"{self.api_root}{self._mr(f'/{number}/discussions')}"
 
     def _paged(self, path: str) -> list:
         """Every item of a list endpoint, following GitLab's next-page number.
@@ -152,10 +147,9 @@ class GitlabForge:
             if nxt is None:
                 if len(response.data) < _PAGE_SIZE:
                     return out
-                nxt = str(page + 1)
-            if not nxt.strip():
+            elif not nxt.strip():
                 return out
-            if nxt.strip() != str(page + 1):
+            elif nxt.strip() != str(page + 1):
                 raise ApiError(502, url, "invalid GitLab next-page header")
             page += 1
         raise ApiError(502, url, f"more than {_MAX_PAGES} pages of results")
@@ -248,22 +242,21 @@ class GitlabForge:
         exception type would escape the relay's retry accounting and leave the
         message pending forever."""
         prefix, _, raw = feedback.id.partition("-")
+        path = self._mr(f"/{number}/discussions")
         try:
             note_id = int(raw)
         except ValueError:
             raise ApiError(
-                400, self._discussions_url(number), f"malformed feedback id {feedback.id!r}"
+                400, f"{self.api_root}{path}", f"malformed feedback id {feedback.id!r}"
             ) from None
-        for d in self._paged(self._mr(f"/{number}/discussions")):
+        for d in self._paged(path):
             if any(n.get("id") == note_id for n in d.get("notes") or []):
                 posted = self._call(
                     "POST", self._mr(f"/{number}/discussions/{d['id']}/notes"), {"body": body}
                 )
                 new_id = (posted or {}).get("id")
                 return f"{prefix}-{new_id}" if new_id else None
-        raise ApiError(
-            404, self._discussions_url(number), f"no discussion holds note {note_id}"
-        )
+        raise ApiError(404, f"{self.api_root}{path}", f"no discussion holds note {note_id}")
 
     def ci_status(self, ref: str) -> CiStatus:
         """Fold the commit-statuses endpoint for ``ref`` into one verdict. It

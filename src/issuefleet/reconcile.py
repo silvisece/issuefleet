@@ -22,6 +22,7 @@ from issuefleet import attachments as attachments_mod
 from issuefleet import marker, MARKER_PREFIX
 from issuefleet import config as config_mod
 from issuefleet import gitops
+from issuefleet import security
 from issuefleet import worker as worker_mod
 from issuefleet.config import Config, ProjectConfig
 from issuefleet.github import parse_repo_slug
@@ -32,6 +33,7 @@ from issuefleet.model import (
     PHASE_CRASHED,
     PHASE_RELEASED,
     Issue,
+    PrFeedback,
     WorkerRecord,
     new_upstream_link,
     now_iso,
@@ -40,9 +42,9 @@ from issuefleet.registry import Registry
 
 log = logging.getLogger("issuefleet")
 
-# Relayed somewhere other than the Linear thread, so a failure must not hold
-# back the ordered relays queued behind it.
-_INDEPENDENT_OUTBOX_KINDS = frozenset({"pr_reply"})
+# Forge answers that mean the write will never be accepted: a locked or archived
+# conversation, a deleted comment, a token without write scope.
+_PERMANENT_FORGE_STATUSES = frozenset({401, 403, 404, 410})
 
 # A poll-claimed worker (missed session webhook) probes Linear for its agent
 # session this many ticks before giving up — enough to cover session-creation
@@ -1120,17 +1122,19 @@ class Reconciler:
                 # Leave this and everything after it pending, preserving
                 # order; next tick retries (dedupe via marker).
                 log.exception("worker %s: relay of %s failed; will retry", rec.issue_key, msg.kind)
-                if msg.kind not in _INDEPENDENT_OUTBOX_KINDS:
+                # A pr_reply is relayed to the PR thread rather than the Linear
+                # stream, so a failure must not hold the ordered relays behind it.
+                if msg.kind != "pr_reply":
                     return
 
     def _handle_pr_reply(
         self, rec: WorkerRecord, project: ProjectConfig, mailbox: Mailbox, msg
     ) -> None:
         """Post a worker's reply where the feedback was left. The posted comment's
-        own id is recorded as seen, which is what keeps the reply from coming back
-        as new feedback; the marker in the body is the dedupe key for a retry, and
-        the fallback if we crash between posting and recording. The text is
-        scanned like a `ready` diff before it is published."""
+        id is recorded as seen, which is what keeps the reply from being read back
+        as new feedback; the marker the body ends with identifies it if we crash
+        between posting and recording. The text is scanned like a `ready` diff
+        before it is published."""
         to = msg.payload.get("to", "")
         text = (msg.payload.get("text") or "").strip()
         if rec.pr_number is None:
@@ -1138,6 +1142,7 @@ class Reconciler:
         if not text:
             return self._reject_reply(mailbox, msg, "the reply was empty")
         forge = self.forges[project.name]
+        body = f"🤖 {text}\n\n{marker(msg.id)}"
         feedback = forge.pr_feedback(rec.pr_number)
         already = next((fb for fb in feedback if fb.body.rstrip().endswith(marker(msg.id))), None)
         if already is not None:
@@ -1148,11 +1153,17 @@ class Reconciler:
         if target is None:
             return self._reject_reply(
                 mailbox, msg,
-                f"PR #{rec.pr_number} has no feedback with id `{to}`; use the id shown with the message",
+                f"PR #{rec.pr_number} has no feedback with that id; use the id shown with the message",
             )
         if not self._reply_security_ok(rec, mailbox, msg, text):
             return
-        posted = forge.reply_to_feedback(rec.pr_number, target, f"🤖 {text}\n\n{marker(msg.id)}")
+        try:
+            posted = forge.reply_to_feedback(rec.pr_number, target, body)
+        except ApiError as e:
+            if e.status not in _PERMANENT_FORGE_STATUSES:
+                raise
+            log.warning("worker %s: forge refused a reply (%s)", rec.issue_key, e)
+            return self._reject_reply(mailbox, msg, f"the forge refused it ({e.status})")
         self._remember_reply(rec, posted)
         mailbox.archive_outbox(msg, receipt={"relayed": "forge", "to": to})
 
@@ -1174,10 +1185,8 @@ class Reconciler:
     def _reply_security_ok(self, rec: WorkerRecord, mailbox: Mailbox, msg, text: str) -> bool:
         """Fails closed in block mode, like `ready`: a reply is public text."""
         mode = self.cfg.security.mode
-        lines = text.split("\n")
-        diff = f"+++ b/reply\n@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{line}\n" for line in lines)
         try:
-            verdict = self.gate.scan(diff)
+            verdict = self.gate.scan(security.as_diff("reply", text))
         except Exception:
             log.exception("worker %s: security scan of a reply failed to run", rec.issue_key)
             if mode == "warn":
@@ -1780,7 +1789,7 @@ class Reconciler:
             log.warning("worker %s: branch %s %s vs origin", rec.issue_key, rec.branch, status)
         self._sync_note(mailbox, rec.branch, status)
 
-    def _new_pr_feedback(self, rec: WorkerRecord, forge) -> list:
+    def _new_pr_feedback(self, rec: WorkerRecord, forge) -> list[PrFeedback]:
         """Feedback this worker has not been shown, our own replies excluded.
 
         The forge returns the PR's whole history, so every delivered id is kept

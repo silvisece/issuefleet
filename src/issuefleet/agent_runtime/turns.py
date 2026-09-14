@@ -214,8 +214,7 @@ def format_inbound(msgs: list[Message]) -> str:
     if any(m.kind == "pr_feedback" for m in msgs):
         blocks.append(
             "Answer PR/MR feedback where it was left with "
-            "`agentctl reply --to <id> \"<text>\"`; keep using `agentctl status` for "
-            "progress on the issue."
+            "`agentctl reply --to <id> \"<text>\"`."
         )
     blocks.append(
         "Address these, then continue. Use `agentctl status` to report, "

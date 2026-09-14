@@ -161,36 +161,45 @@ _SENSITIVE_FILE = re.compile(
 _SENSITIVE_FILE_EXEMPT = re.compile(r"\.pub$|/known_hosts$", re.IGNORECASE)
 
 
-_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+_HUNK_HEADER = re.compile(r"@@ -\d+(?:,\d+)? \+\d+(?:,(\d+))? @@")
 
-# (old, new) lines each leading character consumes; "\\" is the no-newline marker.
-_HUNK_CONTENT = {"+": (0, 1), "-": (1, 0), " ": (1, 1), "\\": (0, 0)}
+# New-side lines each leading character consumes; "\\" is the no-newline marker.
+_HUNK_CONTENT = {"+": 1, "-": 0, " ": 1, "\\": 0}
 
 
 def _diff_lines(diff: str):
     """Yield each line with whether it is content inside a declared hunk.
 
-    An added line of text starting ``++ `` also starts ``+++ `` in the diff,
-    so only the hunk's declared lengths tell it apart from a new-file header.
-    A line that cannot be hunk content ends the hunk, which is what keeps a
-    miscounted or non-diff line from swallowing the headers that follow.
+    An added line of text starting ``++ `` also starts ``+++ `` in the diff, so
+    only the hunk's declared new-side length tells it apart from a new-file
+    header — a removed or context line's text renders behind ``-`` or a space,
+    so it can never be mistaken for one. A line that cannot be hunk content ends
+    the hunk, which keeps a miscounted or non-diff line from swallowing the
+    headers that follow.
 
     Split on ``\n`` alone: git ends a line nowhere else, while ``splitlines``
     also breaks on ``\f``, ``\v``, a lone ``\r`` and ``\u2028``, which would
     strand the rest of a real added line outside any hunk."""
-    old_left = new_left = 0
+    left = 0
     for raw in diff.split("\n"):
         if header := _HUNK_HEADER.match(raw):
-            old_left, new_left = int(header[1] or 1), int(header[2] or 1)
-        elif old_left > 0 or new_left > 0:
+            left = int(header[1] or 1)
+        elif left > 0:
             consumed = _HUNK_CONTENT.get(raw[:1])
             if consumed is not None:
-                old_left -= consumed[0]
-                new_left -= consumed[1]
+                left -= consumed
                 yield raw, True
                 continue
-            old_left = new_left = 0
+            left = 0
         yield raw, False
+
+
+def as_diff(path: str, text: str) -> str:
+    """Plain text as a one-file diff of added lines, so any SecurityGate can scan
+    it. The hunk header is required: with no declared length a body line reading
+    ``++ x`` parses as a ``+++ `` file header and is never scanned."""
+    lines = text.split("\n")
+    return f"+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{ln}\n" for ln in lines)
 
 
 def _iter_added(diff: str):

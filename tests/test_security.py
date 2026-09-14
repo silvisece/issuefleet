@@ -4,6 +4,7 @@ Claude deep-scan merge."""
 
 import unittest
 
+from issuefleet import security
 from issuefleet.security import (
     MAX_DIFF_BYTES,
     ClaudeSecurityGate,
@@ -17,14 +18,8 @@ from issuefleet.security import (
 
 def _diff(path: str, *added_lines: str) -> str:
     """A minimal unified diff (one hunk of added lines) for `path`."""
-    body = "".join(f"+{ln}\n" for ln in added_lines)
-    return (
-        f"diff --git a/{path} b/{path}\n"
-        f"--- a/{path}\n"
-        f"+++ b/{path}\n"
-        f"@@ -0,0 +1,{len(added_lines)} @@\n"
-        f"{body}"
-    )
+    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n"
+            + security.as_diff(path, "\n".join(added_lines)))
 
 
 class RegexScannerTest(unittest.TestCase):
@@ -194,6 +189,19 @@ class RegexScannerTest(unittest.TestCase):
                 v = self.s.scan(_diff("conf.py", f'note{sep}KEY = "{secret}"'))
                 self.assertFalse(v.ok)
                 self.assertEqual([f.rule for f in v.findings], ["AWS access key id"])
+
+    def test_a_no_newline_marker_does_not_end_the_hunk(self):
+        """The marker consumes no line, so the added line after it is still hunk
+        content and not a new-file header."""
+        diff = ("diff --git a/doc.md b/doc.md\n--- a/doc.md\n+++ b/doc.md\n@@ -1,1 +1,2 @@\n"
+                "-old text\n\\ No newline at end of file\n+++ b/.env\n+second line\n")
+        self.assertEqual([(f.rule, f.path) for f in self.s.scan(diff).findings], [])
+
+    def test_a_hunk_header_without_lengths_declares_one_line(self):
+        """git omits the count for a single-line hunk."""
+        diff = ("diff --git a/doc.md b/doc.md\n--- a/doc.md\n+++ b/doc.md\n@@ -1 +1 @@\n"
+                "-old\n+++ b/.env\n")
+        self.assertEqual([(f.rule, f.path) for f in self.s.scan(diff).findings], [])
 
     # -- size cap ----------------------------------------------------------
 

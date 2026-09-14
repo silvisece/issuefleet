@@ -1,9 +1,12 @@
 """Turn-decision control flow, driven with a temp directory as a fake
 workspace — no container, no network, no credentials (brief §6)."""
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from issuefleet.agent_runtime import agentctl, turns
 from issuefleet.mailbox import Mailbox
@@ -288,9 +291,6 @@ class AgentctlTest(unittest.TestCase):
         self.assertEqual((m.kind, m.payload), ("pr_reply", {"to": "rc-9", "text": "good catch"}))
 
     def test_replies_to_peeked_late_feedback_do_not_wake_another_turn(self):
-        import contextlib
-        import io
-
         state = turns.TurnState.load(self.agent_dir)
         turns.commit(turns.decide(self.agent_dir, self.mb, state), self.agent_dir, self.mb, state)
         # These arrive after the running turn's initial inbox consumption.
@@ -340,8 +340,6 @@ class AgentctlTest(unittest.TestCase):
                 self.assertEqual(self.mb.pending_outbox(), [])
 
     def test_failed_reply_enqueue_does_not_consume_feedback(self):
-        from unittest import mock
-
         target = self.mb.put_inbox("pr_feedback", {"id": "rc-9", "text": "question"})
         with mock.patch.object(Mailbox, "put_outbox", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
@@ -355,6 +353,11 @@ class AgentctlTest(unittest.TestCase):
         out = turns.format_inbound(self.mb.pending_inbox())
         self.assertIn("[id `rc-9`]", out)
         self.assertIn("agentctl reply --to <id>", out)
+
+    def test_no_reply_hint_without_pr_feedback(self):
+        """A worker with only a Linear reply has no feedback id to answer."""
+        self.mb.put_inbox("reply", {"author": "bob", "text": "use approach B"})
+        self.assertNotIn("agentctl reply", turns.format_inbound(self.mb.pending_inbox()))
 
     def test_ready_sets_ready_phase(self):
         agentctl.main(["ready", "--title", "Fix the thing", "--body", "Does the work."])

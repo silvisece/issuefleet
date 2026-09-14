@@ -195,16 +195,15 @@ class GithubForge:
             posted = self._call(
                 "POST", f"/repos/{self.slug}/pulls/{number}/comments/{raw}/replies", {"body": body}
             )
-            kind = "rc"
         else:
             posted = self._call(
                 "POST",
                 f"/repos/{self.slug}/issues/{number}/comments",
                 {"body": f"@{feedback.reviewer} {body}"},
             )
-            kind = "ic"
+            prefix = "ic"
         new_id = (posted or {}).get("id")
-        return f"{kind}-{new_id}" if new_id else None
+        return f"{prefix}-{new_id}" if new_id else None
 
     def ci_status(self, ref: str) -> CiStatus:
         """Fold the check-runs API and the combined commit-status API for
