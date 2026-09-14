@@ -707,6 +707,18 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(len(self.forge.replies), 1)
         self.assertEqual(self.mailbox().pending_outbox(), [])
 
+    def test_a_reply_too_long_to_scan_is_not_posted(self):
+        """A gate that could not read the whole reply has not cleared it."""
+        from issuefleet.security import MAX_DIFF_BYTES
+
+        _, fid = self._pr_with_feedback()
+        self.rec.gate = RegexSecretScanner()
+        self.mailbox().put_outbox("pr_reply", {"to": fid, "text": "a" * (MAX_DIFF_BYTES + 1)})
+        self.rec.tick()
+        self.assertEqual(self.forge.replies, [])
+        self.assertEqual(self.mailbox().pending_outbox(), [])
+        self.assertIn("too long", self._notes()[-1])
+
     def test_pr_reply_with_a_credential_is_blocked(self):
         n, fid = self._pr_with_feedback()
         self.rec.gate = RegexSecretScanner()

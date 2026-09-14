@@ -1174,7 +1174,7 @@ class Reconciler:
     def _reply_security_ok(self, rec: WorkerRecord, mailbox: Mailbox, msg, text: str) -> bool:
         """Fails closed in block mode, like `ready`: a reply is public text."""
         mode = self.cfg.security.mode
-        lines = text.splitlines()
+        lines = text.split("\n")
         diff = f"+++ b/reply\n@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{line}\n" for line in lines)
         try:
             verdict = self.gate.scan(diff)
@@ -1184,11 +1184,17 @@ class Reconciler:
                 return True
             self._reject_reply(mailbox, msg, "the security gate could not scan it; send it again")
             return False
-        if verdict.ok:
+        if verdict.ok and not verdict.truncated:
             return True
         if mode == "warn":
             log.warning("worker %s: security gate flagged a reply (warn mode)", rec.issue_key)
             return True
+        if verdict.ok:
+            log.warning("worker %s: reply too long to scan (%d bytes)", rec.issue_key, len(text))
+            self._reject_reply(
+                mailbox, msg, "it is too long for the security gate to scan; send a shorter one"
+            )
+            return False
         log.warning("worker %s: security gate BLOCKED a reply (%d finding(s))",
                     rec.issue_key, len(verdict.findings))
         found = "\n".join(f.describe() for f in verdict.findings)

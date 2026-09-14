@@ -185,6 +185,16 @@ class RegexScannerTest(unittest.TestCase):
             [("sensitive file added", "deploy/.env")],
         )
 
+    def test_a_secret_after_a_form_feed_on_one_git_line_is_still_scanned(self):
+        """git ends a line only at "\n". Anything `splitlines` also breaks on
+        would strand the rest of a real added line outside every hunk."""
+        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        for sep in ("\f", "\v", "\r", "\x85", "\u2028", "\x1c"):
+            with self.subTest(sep=repr(sep)):
+                v = self.s.scan(_diff("conf.py", f'note{sep}KEY = "{secret}"'))
+                self.assertFalse(v.ok)
+                self.assertEqual([f.rule for f in v.findings], ["AWS access key id"])
+
     # -- size cap ----------------------------------------------------------
 
     def test_oversize_diff_is_truncated_and_flagged(self):

@@ -173,9 +173,13 @@ def _diff_lines(diff: str):
     An added line of text starting ``++ `` also starts ``+++ `` in the diff,
     so only the hunk's declared lengths tell it apart from a new-file header.
     A line that cannot be hunk content ends the hunk, which is what keeps a
-    miscounted or non-diff line from swallowing the headers that follow."""
+    miscounted or non-diff line from swallowing the headers that follow.
+
+    Split on ``\n`` alone: git ends a line nowhere else, while ``splitlines``
+    also breaks on ``\f``, ``\v``, a lone ``\r`` and ``\u2028``, which would
+    strand the rest of a real added line outside any hunk."""
     old_left = new_left = 0
-    for raw in diff.splitlines():
+    for raw in diff.split("\n"):
         if header := _HUNK_HEADER.match(raw):
             old_left, new_left = int(header[1] or 1), int(header[2] or 1)
         elif old_left > 0 or new_left > 0:
