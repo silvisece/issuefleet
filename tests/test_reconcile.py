@@ -642,6 +642,71 @@ class ReconcileTest(unittest.TestCase):
         self.assertTrue(any("no open PR" in t for t in self._notes()))
         self.assertEqual(self.mailbox().pending_outbox(), [])
 
+    def test_a_human_pasting_our_marker_raw_still_reaches_the_worker(self):
+        """A body is not ours because it mentions our marker. Quoting with "> "
+        was already covered; a raw paste is the same comment with no prefix."""
+        n, _ = self._pr_with_feedback()
+        m = marker("0123456789ab")
+        bodies = [f"```\n{m}\n```\nwhy does this happen?", f"{m}\nis this documented?",
+                  f"    {m}\nplease explain", "<!--\nissuefleet:msg: is undocumented\n-->"]
+        for body in bodies:
+            self.forge.add_feedback(n, body, reviewer="bob")
+        self.rec.tick()
+        delivered = [m_.payload["text"] for m_ in self.mailbox().pending_inbox()
+                     if m_.kind == "pr_feedback"]
+        for body in bodies:
+            self.assertIn(body, delivered)
+
+    def test_crash_window_records_our_reply_not_a_human_quoting_it(self):
+        """GitHub groups feedback by endpoint, so a reviewer's PR-level comment
+        sorts before our threaded reply. The dedupe must still pick ours."""
+        n, fid = self._pr_with_feedback()
+        msg = self.mailbox().put_outbox("pr_reply", {"to": fid, "text": "because of the API"})
+        quote = f"you wrote:\n{marker(msg.id)}\nthat does not answer it"
+        self.forge.add_feedback(n, quote, reviewer="bob")
+        self.forge.add_feedback(n, f"\U0001f916 because of the API\n\n{marker(msg.id)}",
+                                reviewer="issuefleet")
+        ours = self.forge.feedback[n][-1].id
+        self.rec.tick()
+        self.assertEqual(self.forge.replies, [])
+        self.assertIn(ours, self.worker().seen_feedback_ids)
+        delivered = [m_.payload["text"] for m_ in self.mailbox().pending_inbox()
+                     if m_.kind == "pr_feedback"]
+        self.assertIn(quote, delivered)
+
+    def test_an_unpostable_reply_does_not_wedge_the_rest_of_the_outbox(self):
+        """A reply the forge refuses is optional; `ready` and `status` are not."""
+        n, fid = self._pr_with_feedback()
+        self.forge.fail_next_reply = 10_000
+        self.mailbox().put_outbox("pr_reply", {"to": fid, "text": "answer"})
+        self.mailbox().put_outbox("status", {"text": "still working"})
+        self.mailbox().put_outbox("ready", {"title": "T2", "body": "B2"})
+        self.rec.tick()
+        self.rec.tick()
+        self.assertEqual([m_.kind for m_ in self.mailbox().pending_outbox()], ["pr_reply"])
+        self.assertEqual(len(self.forge.updated), 1)
+
+    def test_a_reply_the_forge_gives_no_id_for_echoes_once_at_most(self):
+        """Dedupe is by the posted reply's id, so a forge that answers without one
+        costs a single echo. Filtering on the marker in the body instead would
+        drop human comments that quote it, which is the worse trade."""
+        n, fid = self._pr_with_feedback()
+        posted = self.forge.reply_to_feedback
+
+        def without_id(number, feedback, body):
+            posted(number, feedback, body)
+            return None
+
+        self.forge.reply_to_feedback = without_id
+        self.mailbox().put_outbox("pr_reply", {"to": fid, "text": "done"})
+        for _ in range(6):
+            self.rec.tick()
+        echoed = [m_ for m_ in self.mailbox().pending_inbox()
+                  if m_.kind == "pr_feedback" and "done" in m_.payload["text"]]
+        self.assertEqual(len(echoed), 1)
+        self.assertEqual(len(self.forge.replies), 1)
+        self.assertEqual(self.mailbox().pending_outbox(), [])
+
     def test_pr_reply_with_a_credential_is_blocked(self):
         n, fid = self._pr_with_feedback()
         self.rec.gate = RegexSecretScanner()

@@ -357,6 +357,11 @@ class GithubForgeTest(unittest.TestCase):
         self.assertEqual(fb[-1].body, "newest")
         self.assertIn("per_page=100&page=2", t.calls[1]["url"])
 
+    def test_a_list_endpoint_answering_an_object_raises_api_error(self):
+        t = RecordingTransport([{"message": "Not Found"}])
+        with self.assertRaisesRegex(ApiError, "expected a list, got dict"):
+            GithubForge("tok", "o/r", transport=t).pr_feedback(5)
+
     def test_ci_status_folds_checks_and_statuses_to_success(self):
         t = RecordingTransport(
             [

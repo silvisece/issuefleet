@@ -280,6 +280,36 @@ class GitlabForgeTest(unittest.TestCase):
         self.assertEqual(len(feedback), 100)
         self.assertEqual(opened.call_count, 1)
 
+    def test_a_skipped_next_page_is_an_error_not_silent_data_loss(self):
+        pages = [HttpResponse([{"id": 1, "body": "a"}], {"X-Next-Page": "3"})]
+        with mock.patch("urllib.request.urlopen", side_effect=pages):
+            with self.assertRaisesRegex(ApiError, "invalid GitLab next-page header"):
+                GitlabForge("tok", "g/p").pr_feedback(5)
+
+    def test_an_oversized_next_page_header_raises_api_error(self):
+        with mock.patch("urllib.request.urlopen",
+                        return_value=HttpResponse([], {"X-Next-Page": "9" * 5000})):
+            with self.assertRaisesRegex(ApiError, "invalid GitLab next-page header"):
+                GitlabForge("tok", "g/p").pr_feedback(5)
+
+    def test_a_list_endpoint_answering_an_object_raises_api_error(self):
+        """A WAF or gateway can answer 200 with an error object; without this the
+        shape error surfaces as an AttributeError inside the caller."""
+        t = RecordingTransport([{"message": "403 Forbidden"}])
+        with self.assertRaisesRegex(ApiError, "expected a list, got dict"):
+            GitlabForge("tok", "g/p", transport=t).pr_feedback(5)
+
+    def test_reply_id_keeps_the_kind_of_the_note_it_answers(self):
+        """The reply lands in that note's discussion, so it has that note's kind.
+        GitLab omits or nulls `type` on the POST echo, and an id that disagrees
+        with pr_feedback's is a dedupe key that never matches."""
+        for echo in ({"id": 77}, {"id": 77, "type": None}, {"id": 77, "type": "DiffNote"}):
+            with self.subTest(echo=echo):
+                t = RecordingTransport([[{"id": "d1", "notes": [{"id": 42}]}], echo])
+                fb = PrFeedback(id="dn-42", kind="review_comment", reviewer="b", body="x")
+                forge = GitlabForge("tok", "g/p", transport=t)
+                self.assertEqual(forge.reply_to_feedback(5, fb, "x"), "dn-77")
+
     def test_invalid_next_page_cannot_redirect_or_repeat_credentials(self):
         for next_page in ("https://other.example/collect", "1", "0", "-1"):
             with self.subTest(next_page=next_page):

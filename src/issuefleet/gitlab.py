@@ -137,26 +137,27 @@ class GitlabForge:
 
         Some endpoints filter entries after paginating, so a short — even an
         empty — page can still have a successor; body length is only the
-        fallback where a transport or server hides the header. Only a forward
-        page number on the same endpoint is followed, so the URL carrying our
-        credentials is always one we built.
+        fallback where a transport or server hides the header. Only the next
+        page of the same endpoint is followed: a header naming anything else is
+        an error rather than a URL to fetch.
         """
         sep = "&" if "?" in path else "?"
         url, out, page = f"{self.api_root}{path}", [], 1
         for _ in range(_MAX_PAGES):
             response = self._response("GET", f"{path}{sep}per_page={_PAGE_SIZE}&page={page}")
+            if not isinstance(response.data, list):
+                raise ApiError(502, url, f"expected a list, got {type(response.data).__name__}")
             out.extend(response.data)
             nxt = response.headers.get("x-next-page")
             if nxt is None:
                 if len(response.data) < _PAGE_SIZE:
                     return out
                 nxt = str(page + 1)
-            nxt = nxt.strip()
-            if not nxt:
+            if not nxt.strip():
                 return out
-            if not (nxt.isascii() and nxt.isdecimal() and int(nxt) > page):
+            if nxt.strip() != str(page + 1):
                 raise ApiError(502, url, "invalid GitLab next-page header")
-            page = int(nxt)
+            page += 1
         raise ApiError(502, url, f"more than {_MAX_PAGES} pages of results")
 
     # -- Forge port --------------------------------------------------------
@@ -246,7 +247,7 @@ class GitlabForge:
         A malformed id raises ApiError like any other forge failure: an unexpected
         exception type would escape the relay's retry accounting and leave the
         message pending forever."""
-        _, _, raw = feedback.id.partition("-")
+        prefix, _, raw = feedback.id.partition("-")
         try:
             note_id = int(raw)
         except ValueError:
@@ -259,9 +260,7 @@ class GitlabForge:
                     "POST", self._mr(f"/{number}/discussions/{d['id']}/notes"), {"body": body}
                 )
                 new_id = (posted or {}).get("id")
-                if not new_id:
-                    return None
-                return f"{'dn' if posted.get('type') == 'DiffNote' else 'nt'}-{new_id}"
+                return f"{prefix}-{new_id}" if new_id else None
         raise ApiError(
             404, self._discussions_url(number), f"no discussion holds note {note_id}"
         )

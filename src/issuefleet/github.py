@@ -95,6 +95,8 @@ class GithubForge:
         out: list = []
         for page in range(1, _MAX_PAGES + 1):
             batch = self._call("GET", f"{path}{sep}per_page={_PAGE_SIZE}&page={page}")
+            if not isinstance(batch, list):
+                raise ApiError(502, f"{API_ROOT}{path}", f"expected a list, got {type(batch).__name__}")
             out.extend(batch)
             if len(batch) < _PAGE_SIZE:
                 return out

@@ -13,7 +13,6 @@ Design rules (from the brief):
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import threading
 import time
@@ -41,8 +40,9 @@ from issuefleet.registry import Registry
 
 log = logging.getLogger("issuefleet")
 
-# Our own replies, matched only at a line start so a human's quote still counts.
-_OWN_REPLY_MARKER = re.compile(r"^[ \t]*<!--\s*" + re.escape(MARKER_PREFIX), re.M)
+# Relayed somewhere other than the Linear thread, so a failure must not hold
+# back the ordered relays queued behind it.
+_INDEPENDENT_OUTBOX_KINDS = frozenset({"pr_reply"})
 
 # A poll-claimed worker (missed session webhook) probes Linear for its agent
 # session this many ticks before giving up — enough to cover session-creation
@@ -1120,7 +1120,8 @@ class Reconciler:
                 # Leave this and everything after it pending, preserving
                 # order; next tick retries (dedupe via marker).
                 log.exception("worker %s: relay of %s failed; will retry", rec.issue_key, msg.kind)
-                return
+                if msg.kind not in _INDEPENDENT_OUTBOX_KINDS:
+                    return
 
     def _handle_pr_reply(
         self, rec: WorkerRecord, project: ProjectConfig, mailbox: Mailbox, msg
@@ -1138,7 +1139,7 @@ class Reconciler:
             return self._reject_reply(mailbox, msg, "the reply was empty")
         forge = self.forges[project.name]
         feedback = forge.pr_feedback(rec.pr_number)
-        already = next((fb for fb in feedback if marker(msg.id) in fb.body), None)
+        already = next((fb for fb in feedback if fb.body.rstrip().endswith(marker(msg.id))), None)
         if already is not None:
             self._remember_reply(rec, already.id)
             mailbox.archive_outbox(msg, receipt={"deduped": True})
@@ -1777,11 +1778,13 @@ class Reconciler:
         """Feedback this worker has not been shown, our own replies excluded.
 
         The forge returns the PR's whole history, so every delivered id is kept
-        for the worker's lifetime: evicting one makes old feedback new again."""
+        for the worker's lifetime: evicting one makes old feedback new again. Our
+        own replies are in that history; the relay runs first in the same tick and
+        records each one's id, so they are never new."""
         seen = set(rec.seen_feedback_ids)
         new_feedback = []
         for fb in forge.pr_feedback(rec.pr_number):
-            if fb.id in seen or _OWN_REPLY_MARKER.search(fb.body):
+            if fb.id in seen:
                 continue
             seen.add(fb.id)
             new_feedback.append(fb)
