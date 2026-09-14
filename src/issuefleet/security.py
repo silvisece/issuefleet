@@ -161,33 +161,32 @@ _SENSITIVE_FILE = re.compile(
 _SENSITIVE_FILE_EXEMPT = re.compile(r"\.pub$|/known_hosts$", re.IGNORECASE)
 
 
-def _diff_lines(diff: str):
-    """Yield each line with whether it belongs to a declared diff hunk.
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
 
-    An added line of text starting ``++ `` also starts ``+++ `` in the
-    diff. Hunk lengths distinguish that content from a new file header,
-    including plain unified diffs without ``diff --git`` separators.
-    """
+# (old, new) lines each leading character consumes; "\\" is the no-newline marker.
+_HUNK_CONTENT = {"+": (0, 1), "-": (1, 0), " ": (1, 1), "\\": (0, 0)}
+
+
+def _diff_lines(diff: str):
+    """Yield each line with whether it is content inside a declared hunk.
+
+    An added line of text starting ``++ `` also starts ``+++ `` in the diff,
+    so only the hunk's declared lengths tell it apart from a new-file header.
+    A line that cannot be hunk content ends the hunk, which is what keeps a
+    miscounted or non-diff line from swallowing the headers that follow."""
     old_left = new_left = 0
     for raw in diff.splitlines():
-        if raw.startswith("diff --git"):
+        if header := _HUNK_HEADER.match(raw):
+            old_left, new_left = int(header[1] or 1), int(header[2] or 1)
+        elif old_left > 0 or new_left > 0:
+            consumed = _HUNK_CONTENT.get(raw[:1])
+            if consumed is not None:
+                old_left -= consumed[0]
+                new_left -= consumed[1]
+                yield raw, True
+                continue
             old_left = new_left = 0
-        hunk = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", raw)
-        if hunk:
-            old_left = int(hunk.group(1) or 1)
-            new_left = int(hunk.group(2) or 1)
-            yield raw, False
-            continue
-        in_hunk = old_left > 0 or new_left > 0
-        yield raw, in_hunk
-        if in_hunk:
-            if raw.startswith("+"):
-                new_left -= 1
-            elif raw.startswith("-"):
-                old_left -= 1
-            elif raw.startswith(" "):
-                old_left -= 1
-                new_left -= 1
+        yield raw, False
 
 
 def _iter_added(diff: str):

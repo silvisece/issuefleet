@@ -10,9 +10,9 @@ signature that a WAF in front of a self-hosted forge rejects outright.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 from issuefleet import __version__
 
@@ -50,9 +50,7 @@ def urllib_transport_with_headers(
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
             body = resp.read().decode()
-            response_headers = {
-                key.lower(): value for key, value in getattr(resp, "headers", {}).items()
-            }
+            response_headers = {k.lower(): v for k, v in resp.headers.items()}
     except urllib.error.HTTPError as e:
         raise ApiError(e.code, url, e.read().decode(errors="replace"))
     except urllib.error.URLError as e:

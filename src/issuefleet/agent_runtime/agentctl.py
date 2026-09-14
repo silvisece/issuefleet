@@ -35,6 +35,14 @@ def _text_arg(args) -> str:
     raise SystemExit("agentctl: provide text or --file")
 
 
+def _consume_answered_feedback(mb, feedback_id: str) -> None:
+    """Drop the feedback a queued reply answers: read mid-turn with `inbox`, it
+    would otherwise be injected again on the next turn."""
+    for msg in mb.pending_inbox():
+        if msg.kind == "pr_feedback" and msg.payload.get("id") == feedback_id:
+            mb.consume_inbox(msg)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="agentctl", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -50,7 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "reply", help="reply on the PR/MR thread a piece of review feedback came from (relayed)"
     )
-    p.add_argument("--to", required=True, metavar="ID", help="the feedback id shown with the message")
+    p.add_argument(
+        "--to", required=True, metavar="ID", help="the feedback id shown with the message"
+    )
     p.add_argument("text", nargs="*")
     p.add_argument("--file", help="read the text from a file")
 
@@ -123,11 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         if not text:
             raise SystemExit("agentctl: reply text must not be empty")
         mb.put_outbox("pr_reply", {"to": args.to, "text": text})
-        # Feedback can arrive after this turn began and be read with `inbox`.
-        # Once its answer is durably queued, do not inject it again next turn.
-        for msg in mb.pending_inbox():
-            if msg.kind == "pr_feedback" and msg.payload.get("id") == args.to:
-                mb.consume_inbox(msg)
+        _consume_answered_feedback(mb, args.to)
         print(f"reply to {args.to} queued for relay")
     elif args.cmd == "ready":
         body = args.body if args.body is not None else Path(args.body_file).read_text()

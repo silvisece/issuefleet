@@ -32,6 +32,9 @@ _PENDING_STATES = frozenset(
 # they're left out to avoid false alarms (mirrors the GitHub forge's choices).
 _FAILING_STATES = frozenset({"failed"})
 
+_PAGE_SIZE = 100
+_MAX_PAGES = 100
+
 
 def _to_pr(d: dict) -> PullRequest:
     """Normalize a GitLab merge request into the tracker-agnostic PullRequest.
@@ -74,7 +77,10 @@ def _to_pr(d: dict) -> PullRequest:
 
 
 class GitlabForge:
-    def __init__(self, token, slug: str, host: str = "gitlab.com", transport=urllib_transport_with_headers):
+    def __init__(
+        self, token, slug: str, host: str = "gitlab.com",
+        transport=urllib_transport_with_headers,
+    ):
         """token: a PAT string (personal, group, or project access token), or a
         zero-arg callable returning a current token. slug: the project path
         ``group/name`` (possibly nested). host: the instance hostname."""
@@ -103,6 +109,8 @@ class GitlabForge:
         return self._response(method, path, payload).data
 
     def _response(self, method: str, path: str, payload: dict | None = None) -> JsonResponse:
+        """The call's body and response headers. A transport that returns the
+        decoded JSON alone is read as a response carrying no headers."""
         response = self.transport(
             method,
             f"{self.api_root}{path}",
@@ -116,38 +124,40 @@ class GitlabForge:
             },
             payload,
         )
-        # Existing injected transports return just the decoded JSON.
         return response if isinstance(response, JsonResponse) else JsonResponse(response, {})
 
     def _mr(self, path: str = "") -> str:
         return f"/projects/{self.project_id}/merge_requests{path}"
 
-    def _paged(self, path: str) -> list:
-        """Follow GitLab's next-page metadata, including filtered short pages.
+    def _discussions_url(self, number: int) -> str:
+        return f"{self.api_root}{self._mr(f'/{number}/discussions')}"
 
-        Some list endpoints filter entries after pagination; even an empty
-        body can have a following page. Body length is only a fallback for
-        transports or servers that do not expose pagination headers.
+    def _paged(self, path: str) -> list:
+        """Every item of a list endpoint, following GitLab's next-page number.
+
+        Some endpoints filter entries after paginating, so a short — even an
+        empty — page can still have a successor; body length is only the
+        fallback where a transport or server hides the header. Only a forward
+        page number on the same endpoint is followed, so the URL carrying our
+        credentials is always one we built.
         """
-        size, page, out = 100, 1, []
         sep = "&" if "?" in path else "?"
-        while True:
-            response = self._response("GET", f"{path}{sep}per_page={size}&page={page}")
-            batch = response.data
-            out.extend(batch)
-            if "x-next-page" in response.headers:
-                next_page = response.headers["x-next-page"].strip()
-                if not next_page:
+        url, out, page = f"{self.api_root}{path}", [], 1
+        for _ in range(_MAX_PAGES):
+            response = self._response("GET", f"{path}{sep}per_page={_PAGE_SIZE}&page={page}")
+            out.extend(response.data)
+            nxt = response.headers.get("x-next-page")
+            if nxt is None:
+                if len(response.data) < _PAGE_SIZE:
                     return out
-                # Follow only forward numeric pages on the original endpoint;
-                # never send credentials to a URL supplied in a Link header.
-                if not next_page.isascii() or not next_page.isdecimal() or int(next_page) <= page:
-                    raise ApiError(502, f"{self.api_root}{path}", "invalid GitLab next-page header")
-                page = int(next_page)
-                continue
-            if len(batch) < size:
+                nxt = str(page + 1)
+            nxt = nxt.strip()
+            if not nxt:
                 return out
-            page += 1
+            if not (nxt.isascii() and nxt.isdecimal() and int(nxt) > page):
+                raise ApiError(502, url, "invalid GitLab next-page header")
+            page = int(nxt)
+        raise ApiError(502, url, f"more than {_MAX_PAGES} pages of results")
 
     # -- Forge port --------------------------------------------------------
 
@@ -241,7 +251,7 @@ class GitlabForge:
             note_id = int(raw)
         except ValueError:
             raise ApiError(
-                400, self._mr(f"/{number}/discussions"), f"malformed feedback id {feedback.id!r}"
+                400, self._discussions_url(number), f"malformed feedback id {feedback.id!r}"
             ) from None
         for d in self._paged(self._mr(f"/{number}/discussions")):
             if any(n.get("id") == note_id for n in d.get("notes") or []):
@@ -252,7 +262,9 @@ class GitlabForge:
                 if not new_id:
                     return None
                 return f"{'dn' if posted.get('type') == 'DiffNote' else 'nt'}-{new_id}"
-        raise ApiError(404, self._mr(f"/{number}/discussions"), f"no discussion holds note {note_id}")
+        raise ApiError(
+            404, self._discussions_url(number), f"no discussion holds note {note_id}"
+        )
 
     def ci_status(self, ref: str) -> CiStatus:
         """Fold the commit-statuses endpoint for ``ref`` into one verdict. It

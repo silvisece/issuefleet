@@ -8,11 +8,12 @@ from pathlib import Path
 
 from fakes import FakeForge, FakeGit, FakeRunner, FakeTracker, make_issue
 
-from issuefleet import MARKER_PREFIX, config
+from issuefleet import MARKER_PREFIX, config, marker
 from issuefleet.mailbox import Mailbox
 from issuefleet.model import PHASE_ACTIVE, PHASE_CRASHED, PHASE_RELEASED
 from issuefleet.reconcile import Reconciler, slugify
 from issuefleet.registry import Registry
+from issuefleet.security import RegexSecretScanner
 
 
 class ReconcileTest(unittest.TestCase):
@@ -170,8 +171,6 @@ class ReconcileTest(unittest.TestCase):
         # Simulate: post succeeded, archive never happened (process died).
         self.claim_one()
         m = self.mailbox().put_outbox("status", {"text": "half-delivered"})
-        from issuefleet import marker
-
         self.tracker.post_comment("issue-1", f"🤖 half-delivered\n\n{marker(m.id)}")
         posted_before = len(self.tracker.posted)
         self.rec.tick()
@@ -231,8 +230,6 @@ class ReconcileTest(unittest.TestCase):
         )
 
     def test_security_gate_blocks_leaky_ready_and_wakes_agent(self):
-        from issuefleet.security import RegexSecretScanner
-
         self.rec.gate = RegexSecretScanner()  # cfg.security.mode defaults to "block"
         self.claim_one()
         self.git.diff_text = self._leaky_diff()
@@ -249,8 +246,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(self.mailbox().pending_outbox(), [])
 
     def test_security_gate_passes_clean_ready(self):
-        from issuefleet.security import RegexSecretScanner
-
         self.rec.gate = RegexSecretScanner()
         self.claim_one()
         self.git.diff_text = (
@@ -261,8 +256,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(self.git.pushed, [self.worker().branch])
 
     def test_security_warn_mode_submits_but_notifies(self):
-        from issuefleet.security import RegexSecretScanner
-
         self.rec.gate = RegexSecretScanner()
         self.cfg.security.mode = "warn"
         self.claim_one()
@@ -282,8 +275,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(self.git.pushed, [self.worker().branch])
 
     def test_security_scan_error_fails_closed(self):
-        from issuefleet.security import RegexSecretScanner
-
         self.rec.gate = RegexSecretScanner()
         self.claim_one()
         self.git.fail_next_diff = 1
@@ -328,7 +319,6 @@ class ReconcileTest(unittest.TestCase):
         # retry must find the existing issue by marker, not file a duplicate.
         self.claim_one()
         m = self.mailbox().put_outbox("file_issue", {"title": "T", "description": "d"})
-        from issuefleet import marker
         from fakes import make_issue
 
         self.tracker.add_issue(
@@ -446,8 +436,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(sum(m.kind == "ci_status" for m in self.mailbox().pending_inbox()), 1)
 
     def test_human_marker_mentions_are_delivered(self):
-        from issuefleet import marker
-
         n, _ = self._pr_with_feedback()
         comments = [
             "Please document issuefleet:msg: in the format description.",
@@ -597,8 +585,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(self.mailbox().pending_outbox(), [])
 
     def test_a_human_quoting_our_reply_still_reaches_the_worker(self):
-        from issuefleet import marker
-
         n, _ = self._pr_with_feedback()
         self.forge.add_feedback(
             n, f"> \U0001f916 an earlier reply\n> {marker('abc123')}\n\nstill unclear, please explain",
@@ -627,8 +613,6 @@ class ReconcileTest(unittest.TestCase):
     def test_pr_reply_crash_after_post_does_not_double_post(self):
         n, fid = self._pr_with_feedback()
         m = self.mailbox().put_outbox("pr_reply", {"to": fid, "text": "half-delivered"})
-        from issuefleet import marker
-
         self.forge.add_feedback(n, f"🤖 half-delivered\n\n{marker(m.id)}", reviewer="issuefleet")
         self.rec.tick()
         self.assertEqual(self.forge.replies, [])
@@ -659,8 +643,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(self.mailbox().pending_outbox(), [])
 
     def test_pr_reply_with_a_credential_is_blocked(self):
-        from issuefleet.security import RegexSecretScanner
-
         n, fid = self._pr_with_feedback()
         self.rec.gate = RegexSecretScanner()
         secret = "AKIA" + "ABCDEFGHIJKLMNOP"
@@ -672,8 +654,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertFalse(any(secret in t for t in notes))
 
     def test_pr_reply_diff_header_shaped_credentials_are_blocked_and_redacted(self):
-        from issuefleet.security import RegexSecretScanner
-
         _, fid = self._pr_with_feedback()
         self.rec.gate = RegexSecretScanner()
         secret = "AKIA" + "ABCDEFGHIJKLMNOP"

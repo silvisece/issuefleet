@@ -11,6 +11,7 @@ from unittest import mock
 from issuefleet import config, creds, oauth
 from issuefleet.github import GithubForge, parse_repo_slug
 from issuefleet.httpx import USER_AGENT, ApiError, urllib_transport
+from issuefleet.model import PrFeedback
 from issuefleet.publish import DISCORD_USER_AGENT
 from issuefleet.linear import (
     AppTokenProvider,
@@ -323,8 +324,6 @@ class GithubForgeTest(unittest.TestCase):
         self.assertFalse(GithubForge("tok", "o/r", transport=boom).ack_feedback(5, "ic-1"))
 
     def test_reply_to_inline_comment_threads_it(self):
-        from issuefleet.model import PrFeedback
-
         t = RecordingTransport([{}])
         fb = PrFeedback(id="rc-99", kind="review_comment", reviewer="bob", body="x")
         GithubForge("tok", "o/r", transport=t).reply_to_feedback(5, fb, "thanks")
@@ -333,8 +332,6 @@ class GithubForgeTest(unittest.TestCase):
         self.assertEqual(t.calls[0]["payload"], {"body": "thanks"})
 
     def test_reply_to_pr_comment_or_review_mentions_the_reviewer(self):
-        from issuefleet.model import PrFeedback
-
         for fid in ("ic-7", "rv-8"):
             t = RecordingTransport([{}])
             fb = PrFeedback(id=fid, kind="comment", reviewer="alice", body="x")
@@ -343,8 +340,6 @@ class GithubForgeTest(unittest.TestCase):
             self.assertEqual(t.calls[0]["payload"], {"body": "@alice done"})
 
     def test_reply_returns_the_new_comment_id(self):
-        from issuefleet.model import PrFeedback
-
         inline = PrFeedback(id="rc-99", kind="review_comment", reviewer="bob", body="x")
         forge = GithubForge("tok", "o/r", transport=RecordingTransport([{"id": 555}]))
         self.assertEqual(forge.reply_to_feedback(5, inline, "x"), "rc-555")
@@ -631,6 +626,8 @@ class UserAgentTest(unittest.TestCase):
         seen = {}
 
         class FakeResp:
+            headers: dict[str, str] = {}
+
             def read(self):
                 return b"{}"
 

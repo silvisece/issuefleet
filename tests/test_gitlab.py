@@ -9,7 +9,9 @@ from issuefleet.config import ProjectConfig, ClaimRule
 from issuefleet.forge import build_forge, forge_kind, infer_kind
 from issuefleet.github import GithubForge
 from issuefleet.gitlab import GitlabForge
+from issuefleet.httpx import ApiError
 from issuefleet.giturl import parse_remote
+from issuefleet.model import PrFeedback
 
 
 class RecordingTransport:
@@ -199,8 +201,6 @@ class GitlabForgeTest(unittest.TestCase):
         self.assertEqual(pr.mergeable_state, "dirty")
 
     def test_reply_posts_into_the_notes_discussion(self):
-        from issuefleet.model import PrFeedback
-
         t = RecordingTransport([[{"id": "abc", "notes": [{"id": 1}]},
                                  {"id": "def", "notes": [{"id": 42}, {"id": 43}]}], {}])
         fb = PrFeedback(id="dn-43", kind="review_comment", reviewer="bob", body="x")
@@ -211,16 +211,11 @@ class GitlabForgeTest(unittest.TestCase):
         self.assertEqual(t.calls[1]["payload"], {"body": "fixed"})
 
     def test_reply_returns_the_new_note_id(self):
-        from issuefleet.model import PrFeedback
-
         t = RecordingTransport([[{"id": "d1", "notes": [{"id": 42}]}], {"id": 77, "type": "DiffNote"}])
         fb = PrFeedback(id="dn-42", kind="review_comment", reviewer="bob", body="x")
         self.assertEqual(GitlabForge("tok", "g/p", transport=t).reply_to_feedback(5, fb, "x"), "dn-77")
 
     def test_reply_with_a_malformed_id_raises_api_error(self):
-        from issuefleet.httpx import ApiError
-        from issuefleet.model import PrFeedback
-
         t = RecordingTransport([])
         fb = PrFeedback(id="nt-oops", kind="comment", reviewer="bob", body="x")
         with self.assertRaises(ApiError):
@@ -228,9 +223,6 @@ class GitlabForgeTest(unittest.TestCase):
         self.assertEqual(t.calls, [])
 
     def test_reply_raises_when_no_discussion_holds_the_note(self):
-        from issuefleet.httpx import ApiError
-        from issuefleet.model import PrFeedback
-
         t = RecordingTransport([[{"id": "abc", "notes": [{"id": 1}]}]])
         fb = PrFeedback(id="nt-9", kind="comment", reviewer="bob", body="x")
         with self.assertRaises(ApiError):
@@ -266,8 +258,6 @@ class GitlabForgeTest(unittest.TestCase):
         )
 
     def test_reply_finds_discussion_after_filtered_short_page(self):
-        from issuefleet.model import PrFeedback
-
         responses = [
             HttpResponse([{"id": "first", "notes": [{"id": 1}]}], {"X-Next-Page": "2"}),
             HttpResponse([{"id": "target", "notes": [{"id": 42}]}], {"X-Next-Page": ""}),
@@ -291,8 +281,6 @@ class GitlabForgeTest(unittest.TestCase):
         self.assertEqual(opened.call_count, 1)
 
     def test_invalid_next_page_cannot_redirect_or_repeat_credentials(self):
-        from issuefleet.httpx import ApiError
-
         for next_page in ("https://other.example/collect", "1", "0", "-1"):
             with self.subTest(next_page=next_page):
                 with mock.patch("urllib.request.urlopen", return_value=HttpResponse(
@@ -344,8 +332,6 @@ class GitlabForgeTest(unittest.TestCase):
         self.assertIn("/merge_requests/5/notes/7/award_emoji", t.calls[0]["url"])
 
     def test_ack_feedback_swallows_api_error(self):
-        from issuefleet.httpx import ApiError
-
         def boom(*a):
             raise ApiError(409, "award_emoji", "already awarded")
         self.assertFalse(GitlabForge("tok", "g/p", transport=boom).ack_feedback(5, "nt-1"))

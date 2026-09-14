@@ -41,9 +41,7 @@ from issuefleet.registry import Registry
 
 log = logging.getLogger("issuefleet")
 
-# Our own posted replies carry this marker. Matched only at the start of a line:
-# a human quoting our reply (GitHub "Quote reply" keeps HTML comments, prefixed
-# with "> ") must still reach the worker.
+# Our own replies, matched only at a line start so a human's quote still counts.
 _OWN_REPLY_MARKER = re.compile(r"^[ \t]*<!--\s*" + re.escape(MARKER_PREFIX), re.M)
 
 # A poll-claimed worker (missed session webhook) probes Linear for its agent
@@ -1136,9 +1134,13 @@ class Reconciler:
         text = (msg.payload.get("text") or "").strip()
         if rec.pr_number is None:
             return self._reject_reply(mailbox, msg, "you have no open PR, so there is nothing to reply on")
+        if not text:
+            return self._reject_reply(mailbox, msg, "the reply was empty")
         forge = self.forges[project.name]
         feedback = forge.pr_feedback(rec.pr_number)
-        if any(marker(msg.id) in fb.body for fb in feedback):
+        already = next((fb for fb in feedback if marker(msg.id) in fb.body), None)
+        if already is not None:
+            self._remember_reply(rec, already.id)
             mailbox.archive_outbox(msg, receipt={"deduped": True})
             return
         target = next((fb for fb in feedback if fb.id == to), None)
@@ -1147,18 +1149,18 @@ class Reconciler:
                 mailbox, msg,
                 f"PR #{rec.pr_number} has no feedback with id `{to}`; use the id shown with the message",
             )
-        if not text:
-            return self._reject_reply(mailbox, msg, "the reply was empty")
         if not self._reply_security_ok(rec, mailbox, msg, text):
             return
-        posted_id = forge.reply_to_feedback(
-            rec.pr_number, target, f"🤖 {text}\n\n{marker(msg.id)}"
-        )
-        if posted_id:
-            rec.seen_feedback_ids.append(posted_id)
+        posted = forge.reply_to_feedback(rec.pr_number, target, f"🤖 {text}\n\n{marker(msg.id)}")
+        self._remember_reply(rec, posted)
+        mailbox.archive_outbox(msg, receipt={"relayed": "forge", "to": to})
+
+    def _remember_reply(self, rec: WorkerRecord, feedback_id: str | None) -> None:
+        """Record a reply we posted, so a later read never sees it as new."""
+        if feedback_id and feedback_id not in rec.seen_feedback_ids:
+            rec.seen_feedback_ids.append(feedback_id)
             rec.touch()
             self.registry.save()
-        mailbox.archive_outbox(msg, receipt={"relayed": "forge", "to": to})
 
     def _reject_reply(self, mailbox: Mailbox, msg, reason: str) -> None:
         mailbox.ensure().put_inbox(
@@ -1771,9 +1773,11 @@ class Reconciler:
             log.warning("worker %s: branch %s %s vs origin", rec.issue_key, rec.branch, status)
         self._sync_note(mailbox, rec.branch, status)
 
-    def _new_pr_feedback(self, rec: WorkerRecord, forge):
-        # The forge now returns its complete history. Keep all delivered IDs
-        # for the worker's lifetime: evicting one makes old feedback new again.
+    def _new_pr_feedback(self, rec: WorkerRecord, forge) -> list:
+        """Feedback this worker has not been shown, our own replies excluded.
+
+        The forge returns the PR's whole history, so every delivered id is kept
+        for the worker's lifetime: evicting one makes old feedback new again."""
         seen = set(rec.seen_feedback_ids)
         new_feedback = []
         for fb in forge.pr_feedback(rec.pr_number):

@@ -159,8 +159,6 @@ class RegexScannerTest(unittest.TestCase):
         self.assertEqual(v.findings, [])
 
     def test_file_headers_after_completed_hunks_are_still_recognized(self):
-        # Plain unified diffs do not need a `diff --git` separator. Context,
-        # removals, and additions each consume their side's declared count.
         diff = (
             "--- a/first.txt\n+++ b/first.txt\n@@ -3,2 +3,2 @@\n"
             " context\n--- removed text\n+++ b/.env\n"
@@ -171,6 +169,20 @@ class RegexScannerTest(unittest.TestCase):
         self.assertEqual(
             [(f.rule, f.path) for f in v.findings],
             [("sensitive file added", "config/.env")],
+        )
+
+    def test_a_line_that_cannot_be_hunk_content_ends_the_hunk(self):
+        """A hunk whose declared lines never arrive must not swallow the next
+        file's header: a blank line where a ' ' context line was expected."""
+        diff = (
+            "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n"
+            " keep\n\n+tail\n"
+            "--- /dev/null\n+++ b/deploy/.env\n@@ -0,0 +1 @@\n+opaque\n"
+        )
+        v = self.s.scan(diff)
+        self.assertEqual(
+            [(f.rule, f.path) for f in v.findings],
+            [("sensitive file added", "deploy/.env")],
         )
 
     # -- size cap ----------------------------------------------------------

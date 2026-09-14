@@ -19,6 +19,9 @@ log = logging.getLogger("issuefleet.github")
 
 API_ROOT = "https://api.github.com"
 
+_PAGE_SIZE = 100
+_MAX_PAGES = 100
+
 # Check-run conclusions that count as a failure worth surfacing. neutral,
 # skipped, and stale are benign; cancelled is usually a human/superseded stop,
 # not a code failure, so it's left out to avoid false alarms.
@@ -85,16 +88,17 @@ class GithubForge:
         )
 
     def _paged(self, path: str) -> list:
-        """Every item of a list endpoint. The transport exposes no headers, so
-        pages are requested until one comes back short."""
-        size, page, out = 100, 1, []
+        """Every item of a list endpoint, requesting pages until one comes back
+        short. This forge's transport returns decoded JSON alone, so GitHub's
+        Link header is not available to follow."""
         sep = "&" if "?" in path else "?"
-        while True:
-            batch = self._call("GET", f"{path}{sep}per_page={size}&page={page}")
+        out: list = []
+        for page in range(1, _MAX_PAGES + 1):
+            batch = self._call("GET", f"{path}{sep}per_page={_PAGE_SIZE}&page={page}")
             out.extend(batch)
-            if len(batch) < size:
+            if len(batch) < _PAGE_SIZE:
                 return out
-            page += 1
+        raise ApiError(502, f"{API_ROOT}{path}", f"more than {_MAX_PAGES} pages of results")
 
     # -- Forge port --------------------------------------------------------
 
